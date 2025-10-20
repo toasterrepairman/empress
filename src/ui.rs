@@ -1,0 +1,312 @@
+use gtk::prelude::*;
+use gtk::glib;
+use libadwaita as adw;
+use adw::prelude::*;
+
+use crate::mpris_client::{MprisClient, MediaInfo, PlayerStatus};
+
+pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
+    let window = adw::ApplicationWindow::builder()
+        .application(app)
+        .title("Empress")
+        .default_width(400)
+        .default_height(500)
+        .build();
+
+    window.set_size_request(200, 200);
+
+    let header_bar = adw::HeaderBar::new();
+
+    let main_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .build();
+
+    let toolbar_view = adw::ToolbarView::new();
+    toolbar_view.add_top_bar(&header_bar);
+
+    let content = build_content();
+    toolbar_view.set_content(Some(&content.container));
+
+    main_box.append(&toolbar_view);
+    window.set_content(Some(&main_box));
+
+    let mpris_client = MprisClient::new();
+    let media_receiver = mpris_client.start_monitoring();
+
+    let title_label = content.title_label.downgrade();
+    let artist_label = content.artist_label.downgrade();
+    let album_label = content.album_label.downgrade();
+    let album_art = content.album_art.downgrade();
+    let art_container = content.art_container.downgrade();
+    let play_pause_button = content.play_pause_button.downgrade();
+
+    // Poll the receiver from the main GTK thread
+    glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+        // Process all available messages
+        while let Ok(info) = media_receiver.try_recv() {
+            let title_label = title_label.upgrade();
+            let artist_label = artist_label.upgrade();
+            let album_label = album_label.upgrade();
+            let album_art = album_art.upgrade();
+            let art_container = art_container.upgrade();
+            let play_pause_button = play_pause_button.upgrade();
+
+            if let (Some(title_label), Some(artist_label), Some(album_label), Some(album_art), Some(art_container), Some(play_pause_button)) =
+                (title_label, artist_label, album_label, album_art, art_container, play_pause_button)
+            {
+                update_ui_widgets(&title_label, &artist_label, &album_label, &album_art, &art_container, &play_pause_button, &info);
+            }
+        }
+        glib::ControlFlow::Continue
+    });
+
+    setup_controls(&content, mpris_client.clone());
+    setup_keyboard_shortcuts(&window, mpris_client);
+
+    // Set play/pause button as the default focus
+    let play_pause_button = content.play_pause_button.clone();
+    window.connect_show(move |_| {
+        play_pause_button.grab_focus();
+    });
+
+    window
+}
+
+#[derive(Clone)]
+struct MediaContent {
+    container: gtk::Box,
+    album_art: gtk::Picture,
+    art_container: gtk::Box,
+    title_label: gtk::Label,
+    artist_label: gtk::Label,
+    album_label: gtk::Label,
+    play_pause_button: gtk::Button,
+    prev_button: gtk::Button,
+    next_button: gtk::Button,
+}
+
+fn build_content() -> MediaContent {
+    let container = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(12)
+        .margin_top(12)
+        .margin_bottom(12)
+        .margin_start(12)
+        .margin_end(12)
+        .valign(gtk::Align::Fill)
+        .halign(gtk::Align::Fill)
+        .vexpand(true)
+        .hexpand(true)
+        .build();
+
+    let art_container = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .halign(gtk::Align::Fill)
+        .valign(gtk::Align::Fill)
+        .vexpand(true)
+        .hexpand(true)
+        .build();
+
+    let album_art = gtk::Picture::builder()
+        .halign(gtk::Align::Center)
+        .valign(gtk::Align::Center)
+        .can_shrink(true)
+        .keep_aspect_ratio(true)
+        .content_fit(gtk::ContentFit::Contain)
+        .vexpand(true)
+        .hexpand(true)
+        .build();
+
+    art_container.append(&album_art);
+
+    let info_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(4)
+        .halign(gtk::Align::Fill)
+        .hexpand(true)
+        .build();
+
+    let title_label = gtk::Label::builder()
+        .label("No media playing")
+        .css_classes(vec!["title-1"])
+        .wrap(true)
+        .wrap_mode(gtk::pango::WrapMode::WordChar)
+        .justify(gtk::Justification::Center)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .lines(2)
+        .build();
+
+    let artist_label = gtk::Label::builder()
+        .label("")
+        .css_classes(vec!["title-3"])
+        .wrap(true)
+        .justify(gtk::Justification::Center)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .lines(1)
+        .opacity(0.7)
+        .build();
+
+    let album_label = gtk::Label::builder()
+        .label("")
+        .css_classes(vec!["caption"])
+        .wrap(true)
+        .justify(gtk::Justification::Center)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .lines(1)
+        .opacity(0.55)
+        .build();
+
+    info_box.append(&title_label);
+    info_box.append(&artist_label);
+    info_box.append(&album_label);
+
+    let controls_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(8)
+        .halign(gtk::Align::Center)
+        .margin_top(8)
+        .build();
+
+    let prev_button = gtk::Button::builder()
+        .icon_name("media-skip-backward-symbolic")
+        .css_classes(vec!["circular", "flat"])
+        .build();
+
+    let play_pause_button = gtk::Button::builder()
+        .icon_name("media-playback-start-symbolic")
+        .css_classes(vec!["circular", "suggested-action"])
+        .width_request(48)
+        .height_request(48)
+        .build();
+
+    let next_button = gtk::Button::builder()
+        .icon_name("media-skip-forward-symbolic")
+        .css_classes(vec!["circular", "flat"])
+        .build();
+
+    controls_box.append(&prev_button);
+    controls_box.append(&play_pause_button);
+    controls_box.append(&next_button);
+
+    container.append(&art_container);
+    container.append(&info_box);
+    container.append(&controls_box);
+
+    art_container.set_visible(false);
+
+    MediaContent {
+        container,
+        album_art,
+        art_container,
+        title_label,
+        artist_label,
+        album_label,
+        play_pause_button,
+        prev_button,
+        next_button,
+    }
+}
+
+fn update_ui_widgets(
+    title_label: &gtk::Label,
+    artist_label: &gtk::Label,
+    album_label: &gtk::Label,
+    album_art: &gtk::Picture,
+    art_container: &gtk::Box,
+    play_pause_button: &gtk::Button,
+    info: &MediaInfo,
+) {
+    title_label.set_text(&info.title);
+    artist_label.set_text(&info.artist);
+    album_label.set_text(&info.album);
+
+    artist_label.set_visible(!info.artist.is_empty());
+    album_label.set_visible(!info.album.is_empty());
+
+    if let Some(ref art_url) = info.art_url {
+        let url = art_url.strip_prefix("file://").unwrap_or(art_url);
+
+        if let Ok(pixbuf) = gdk_pixbuf::Pixbuf::from_file(url) {
+            let texture = gdk::Texture::for_pixbuf(&pixbuf);
+            album_art.set_paintable(Some(&texture));
+            art_container.set_visible(true);
+        } else {
+            art_container.set_visible(false);
+        }
+    } else {
+        art_container.set_visible(false);
+    }
+
+    let icon_name = match info.status {
+        PlayerStatus::Playing => "media-playback-pause-symbolic",
+        _ => "media-playback-start-symbolic",
+    };
+    play_pause_button.set_icon_name(icon_name);
+}
+
+fn setup_controls(content: &MediaContent, client: MprisClient) {
+    content.play_pause_button.connect_clicked({
+        let client = client.clone();
+        move |_| {
+            let _ = client.play_pause();
+        }
+    });
+
+    content.next_button.connect_clicked({
+        let client = client.clone();
+        move |_| {
+            let _ = client.next();
+        }
+    });
+
+    content.prev_button.connect_clicked({
+        let client = client.clone();
+        move |_| {
+            let _ = client.previous();
+        }
+    });
+}
+
+fn setup_keyboard_shortcuts(window: &adw::ApplicationWindow, client: MprisClient) {
+    let event_controller = gtk::EventControllerKey::new();
+
+    event_controller.connect_key_pressed({
+        let client = client.clone();
+        let window = window.clone();
+        move |_, key, _code, modifier| {
+            // Ctrl+Q to quit
+            if key == gtk::gdk::Key::q && modifier == gtk::gdk::ModifierType::CONTROL_MASK {
+                window.close();
+                return glib::Propagation::Stop;
+            }
+
+            // Up arrow to play
+            if key == gtk::gdk::Key::Up && modifier.is_empty() {
+                let _ = client.play_pause();
+                return glib::Propagation::Stop;
+            }
+
+            // Down arrow to pause
+            if key == gtk::gdk::Key::Down && modifier.is_empty() {
+                let _ = client.play_pause();
+                return glib::Propagation::Stop;
+            }
+
+            // Left arrow for previous
+            if key == gtk::gdk::Key::Left && modifier.is_empty() {
+                let _ = client.previous();
+                return glib::Propagation::Stop;
+            }
+
+            // Right arrow for next
+            if key == gtk::gdk::Key::Right && modifier.is_empty() {
+                let _ = client.next();
+                return glib::Propagation::Stop;
+            }
+
+            glib::Propagation::Proceed
+        }
+    });
+
+    window.add_controller(event_controller);
+}
