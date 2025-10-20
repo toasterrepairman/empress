@@ -1,63 +1,74 @@
 {
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
-    utils.url = "github:numtide/flake-utils";
+    flake-utils.url = "github:numtide/flake-utils";
+    rust-overlay.url = "github:oxalica/rust-overlay";
   };
 
   outputs = {
     self,
     nixpkgs,
-    utils,
+    flake-utils,
+    rust-overlay,
     ...
   } @ inputs:
-    utils.lib.eachDefaultSystem
-    (
-      system: let
-        name = "empress";
-        pkgs = nixpkgs.legacyPackages.${system};
-      in rec {
-        packages.${name} = pkgs.callPackage ./default.nix {
-          inherit (inputs);
-        };
+    flake-utils.lib.eachDefaultSystem (system: let
+      overlays = [(import rust-overlay)];
+      pkgs = import nixpkgs {inherit system overlays;};
+      rustVersion = pkgs.rust-bin.stable.latest.default;
+      packageDeps = with pkgs; [
+        openssl.dev
+        rustc
+        cargo
+        cairo
+        gdk-pixbuf
+        gobject-introspection
+        graphene
+        gtk3.dev
+        gtksourceview5
+        libadwaita.dev
+        hicolor-icon-theme
+        pandoc
+        pango
+        pkg-config
+        appstream-glib
+        polkit
+        gettext
+        desktop-file-utils
+        meson
+        git
+        wrapGAppsHook4
+      ];
 
-        # `nix build`
-        defaultPackage = packages.${name};
+      rustPlatform = pkgs.makeRustPlatform {
+        cargo = rustVersion;
+        rustc = rustVersion;
+      };
 
-        # `nix run`
-        apps.${name} = utils.lib.mkApp {
-          inherit name;
-          drv = packages.${name};
-        };
-        defaultApp = packages.${name};
+      myRustBuild = rustPlatform.buildRustPackage {
+        pname = "empress"; # make this what ever your cargo.toml package.name is
+        version = "0.1.0";
+        src = ./.; # the folder with the cargo.toml
+        nativeBuildInputs = packageDeps;
+        buildInputs = packageDeps;
 
-        # `nix develop`
-        devShells = {
-          default = pkgs.mkShell {
-            nativeBuildInputs = with pkgs; [
-              rustc
-              cargo
-              cairo
-              gdk-pixbuf
-              gobject-introspection
-              graphene
-              gtk3.dev
-              gtksourceview5
-              libadwaita
-              openssl
-              pandoc
-              pango
-              pkg-config
-              appstream-glib
-              polkit
-              gettext
-              desktop-file-utils
-              meson
-              ninja
-              git
-              wrapGAppsHook4
-            ];
-          };
-        };
-      }
-    );
+        cargoLock.lockFile = ./Cargo.lock;
+
+        postBuild = ''
+            # for desktop files
+            # install -Dt $out/share/applications resources/admiral.desktop
+
+            # install -Dt $out/share/icons resources/icon-admiral.png
+        '';
+      };
+
+    in {
+      defaultPackage = myRustBuild;
+
+      meta = with nixpkgs.lib; {
+        description = "empress";
+        license = licenses.gpl3;
+        platforms = platforms.all;
+      };
+    });
 }
