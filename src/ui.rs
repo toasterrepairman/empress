@@ -227,9 +227,11 @@ fn update_ui_widgets(
             album_art.set_paintable(Some(&texture));
             art_container.set_visible(true);
         } else {
+            album_art.set_paintable(gtk::gdk::Paintable::NONE);
             art_container.set_visible(false);
         }
     } else {
+        album_art.set_paintable(gtk::gdk::Paintable::NONE);
         art_container.set_visible(false);
     }
 
