@@ -10,6 +10,8 @@ pub struct MediaInfo {
     pub album: String,
     pub art_url: Option<String>,
     pub status: PlayerStatus,
+    pub position: Option<Duration>,
+    pub length: Option<Duration>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -34,6 +36,7 @@ enum Command {
     PlayPause,
     Next,
     Previous,
+    Seek(i64),
 }
 
 #[derive(Clone)]
@@ -57,6 +60,7 @@ impl MprisClient {
                             Command::PlayPause => p.play_pause(),
                             Command::Next => p.next(),
                             Command::Previous => p.previous(),
+                            Command::Seek(offset) => p.seek(offset),
                         };
                     }
                 }
@@ -125,12 +129,19 @@ impl MprisClient {
             ("No media playing".to_string(), String::new(), String::new(), None)
         };
 
+        let position = player.get_position().ok();
+        let length = metadata.as_ref()
+            .and_then(|m| m.length())
+            .and_then(|l| Duration::try_from(l).ok());
+
         MediaInfo {
             title,
             artist,
             album,
             art_url,
             status,
+            position,
+            length,
         }
     }
 
@@ -146,6 +157,11 @@ impl MprisClient {
 
     pub fn previous(&self) -> anyhow::Result<()> {
         self.command_sender.send(Command::Previous)?;
+        Ok(())
+    }
+
+    pub fn seek(&self, offset_micros: i64) -> anyhow::Result<()> {
+        self.command_sender.send(Command::Seek(offset_micros))?;
         Ok(())
     }
 }

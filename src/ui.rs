@@ -4,6 +4,7 @@ use libadwaita as adw;
 use adw::prelude::*;
 
 use crate::mpris_client::{MprisClient, MediaInfo, PlayerStatus};
+use crate::progress_ring_button::ProgressRingButton;
 
 pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
     let window = adw::ApplicationWindow::builder()
@@ -80,7 +81,7 @@ struct MediaContent {
     title_label: gtk::Label,
     artist_label: gtk::Label,
     album_label: gtk::Label,
-    play_pause_button: gtk::Button,
+    play_pause_button: ProgressRingButton,
     prev_button: gtk::Button,
     next_button: gtk::Button,
 }
@@ -172,12 +173,7 @@ fn build_content() -> MediaContent {
         .css_classes(vec!["circular", "flat"])
         .build();
 
-    let play_pause_button = gtk::Button::builder()
-        .icon_name("media-playback-start-symbolic")
-        .css_classes(vec!["circular", "suggested-action"])
-        .width_request(48)
-        .height_request(48)
-        .build();
+    let play_pause_button = ProgressRingButton::new();
 
     let next_button = gtk::Button::builder()
         .icon_name("media-skip-forward-symbolic")
@@ -213,7 +209,7 @@ fn update_ui_widgets(
     album_label: &gtk::Label,
     album_art: &gtk::Picture,
     art_container: &gtk::Box,
-    play_pause_button: &gtk::Button,
+    play_pause_button: &ProgressRingButton,
     info: &MediaInfo,
 ) {
     title_label.set_text(&info.title);
@@ -237,15 +233,33 @@ fn update_ui_widgets(
         art_container.set_visible(false);
     }
 
-    let icon_name = match info.status {
-        PlayerStatus::Playing => "media-playback-pause-symbolic",
-        _ => "media-playback-start-symbolic",
+    let is_paused = match info.status {
+        PlayerStatus::Playing => false,
+        _ => true,
+    };
+    let icon_name = if is_paused {
+        "media-playback-start-symbolic"
+    } else {
+        "media-playback-pause-symbolic"
     };
     play_pause_button.set_icon_name(icon_name);
+    play_pause_button.set_paused_style(is_paused);
+
+    // Update progress ring
+    if let (Some(position), Some(length)) = (info.position, info.length) {
+        let progress = if length.as_secs() > 0 {
+            position.as_secs_f64() / length.as_secs_f64()
+        } else {
+            0.0
+        };
+        play_pause_button.set_progress(progress);
+    } else {
+        play_pause_button.set_progress(0.0);
+    }
 }
 
 fn setup_controls(content: &MediaContent, client: MprisClient) {
-    content.play_pause_button.connect_clicked({
+    content.play_pause_button.button().connect_clicked({
         let client = client.clone();
         move |_| {
             let _ = client.play_pause();
@@ -265,6 +279,32 @@ fn setup_controls(content: &MediaContent, client: MprisClient) {
             let _ = client.previous();
         }
     });
+
+    // Add scroll event handler for seeking
+    let scroll_controller = gtk::EventControllerScroll::new(
+        gtk::EventControllerScrollFlags::VERTICAL,
+    );
+
+    scroll_controller.connect_scroll({
+        let client = client.clone();
+        move |_, _dx, dy| {
+            // dy > 0 means scrolling down (go back 5 seconds)
+            // dy < 0 means scrolling up (go forward 5 seconds)
+            let offset_seconds = if dy > 0.0 {
+                -5
+            } else {
+                5
+            };
+
+            // MPRIS seek uses microseconds
+            let offset_micros = offset_seconds * 1_000_000;
+            let _ = client.seek(offset_micros);
+
+            glib::Propagation::Stop
+        }
+    });
+
+    content.play_pause_button.add_controller(scroll_controller);
 }
 
 fn setup_keyboard_shortcuts(window: &adw::ApplicationWindow, client: MprisClient) {

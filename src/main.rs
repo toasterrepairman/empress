@@ -1,5 +1,6 @@
 mod mpris_client;
 mod ui;
+mod progress_ring_button;
 
 use gtk::prelude::*;
 use libadwaita as adw;
