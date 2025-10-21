@@ -58,7 +58,8 @@
             # for desktop files
             install -Dt $out/share/applications resources/empress.desktop
 
-            install -Dt $out/share/icons resources/com.github.empress.png
+            # Install icon to proper icon theme location
+            install -Dm644 resources/com.github.empress.png $out/share/icons/hicolor/256x256/apps/com.github.empress.png
         '';
       };
 
