@@ -58,7 +58,7 @@
             # for desktop files
             install -Dt $out/share/applications resources/empress.desktop
 
-            install -Dt $out/share/icons resources/icon-empress.png
+            install -Dt $out/share/icons resources/com.github.empress.png
         '';
       };
 
