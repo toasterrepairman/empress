@@ -219,18 +219,24 @@ fn update_ui_widgets(
     artist_label.set_visible(!info.artist.is_empty());
     album_label.set_visible(!info.album.is_empty());
 
+    // Always update art container visibility based on current art availability
     if let Some(ref art_url) = info.art_url {
         let url = art_url.strip_prefix("file://").unwrap_or(art_url);
 
-        if let Ok(pixbuf) = gdk_pixbuf::Pixbuf::from_file(url) {
-            let texture = gdk::Texture::for_pixbuf(&pixbuf);
-            album_art.set_paintable(Some(&texture));
-            art_container.set_visible(true);
-        } else {
-            album_art.set_paintable(gtk::gdk::Paintable::NONE);
-            art_container.set_visible(false);
+        match gdk_pixbuf::Pixbuf::from_file(url) {
+            Ok(pixbuf) => {
+                let texture = gdk::Texture::for_pixbuf(&pixbuf);
+                album_art.set_paintable(Some(&texture));
+                art_container.set_visible(true);
+            }
+            Err(_) => {
+                // Failed to load art, hide container
+                album_art.set_paintable(gtk::gdk::Paintable::NONE);
+                art_container.set_visible(false);
+            }
         }
     } else {
+        // No art URL provided, hide container
         album_art.set_paintable(gtk::gdk::Paintable::NONE);
         art_container.set_visible(false);
     }
