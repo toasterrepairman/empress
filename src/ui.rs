@@ -26,6 +26,23 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
     toolbar_view.add_top_bar(&header_bar);
 
     let content = build_content();
+
+    // Add drag gesture to move window on the content area
+    let drag_gesture = gtk::GestureDrag::new();
+    drag_gesture.connect_drag_begin({
+        let window = window.clone();
+        move |gesture, _x, _y| {
+            if let Some(device) = gesture.device() {
+                if let Some(surface) = window.surface() {
+                    if let Ok(toplevel) = surface.downcast::<gtk::gdk::Toplevel>() {
+                        toplevel.begin_move(&device, 1, 0.0, 0.0, gtk::gdk::CURRENT_TIME);
+                    }
+                }
+            }
+        }
+    });
+    content.container.add_controller(drag_gesture);
+
     toolbar_view.set_content(Some(&content.container));
 
     main_box.append(&toolbar_view);
@@ -102,8 +119,8 @@ fn build_content() -> MediaContent {
 
     let art_container = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
-        .halign(gtk::Align::Fill)
-        .valign(gtk::Align::Fill)
+        .halign(gtk::Align::Center)
+        .valign(gtk::Align::Center)
         .vexpand(true)
         .hexpand(true)
         .build();
@@ -113,9 +130,10 @@ fn build_content() -> MediaContent {
         .valign(gtk::Align::Center)
         .can_shrink(true)
         .keep_aspect_ratio(true)
-        .content_fit(gtk::ContentFit::Contain)
-        .vexpand(true)
-        .hexpand(true)
+        .content_fit(gtk::ContentFit::Cover)
+        .vexpand(false)
+        .hexpand(false)
+        .css_classes(vec!["album-art"])
         .build();
 
     art_container.append(&album_art);
