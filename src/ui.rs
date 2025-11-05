@@ -27,7 +27,7 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
 
     let content = build_content();
 
-    // Add drag gesture to move window on the content area
+    // Add drag gesture to move window on the album art area only
     let drag_gesture = gtk::GestureDrag::new();
     drag_gesture.connect_drag_begin({
         let window = window.clone();
@@ -41,7 +41,7 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
             }
         }
     });
-    content.container.add_controller(drag_gesture);
+    content.art_container.add_controller(drag_gesture);
 
     toolbar_view.set_content(Some(&content.container));
 
