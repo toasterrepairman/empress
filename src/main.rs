@@ -5,7 +5,7 @@ mod progress_ring_button;
 use gtk::prelude::*;
 use libadwaita as adw;
 
-const APP_ID: &str = "com.github.empress";
+const APP_ID: &str = "com.github.toasterrepair.empress";
 
 fn main() {
     let app = adw::Application::builder()

@@ -56,10 +56,10 @@
 
         postBuild = ''
             # for desktop files
-            install -Dt $out/share/applications resources/empress.desktop
+            install -Dt $out/share/applications resources/com.github.toasterrepair.empress.desktop
 
             # Install icon to proper icon theme location
-            install -Dm644 resources/com.github.empress.png $out/share/icons/hicolor/256x256/apps/com.github.empress.png
+            install -Dm644 resources/com.github.toasterrepair.empress.png $out/share/icons/hicolor/256x256/apps/com.github.toasterrepair.empress.png
         '';
       };
 

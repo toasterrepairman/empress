@@ -11,7 +11,7 @@ Comment=Read Twitch chat in an accessible window
 Exec=empress
 
 ## State the name of the icon that will be used to display this entry ##
-Icon=com.github.empress
+Icon=com.github.toasterrepair.empress
 
 ## Is it a terminal app? For example htop will be set as Terminal=True ##
 ## Then default terminal app will be used to open the 'htop' ##
