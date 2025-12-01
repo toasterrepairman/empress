@@ -53,6 +53,16 @@ impl MprisClient {
             let mut player: Option<Player> = None;
 
             loop {
+                // Update player reference continuously (before checking commands)
+                let finder = PlayerFinder::new();
+                if let Ok(finder) = finder {
+                    if let Some(active_player) = finder.find_active().ok() {
+                        player = Some(active_player);
+                    } else {
+                        player = None;
+                    }
+                }
+
                 // Check for commands (non-blocking)
                 if let Ok(cmd) = command_receiver.try_recv() {
                     if let Some(ref p) = player {
@@ -62,16 +72,6 @@ impl MprisClient {
                             Command::Previous => p.previous(),
                             Command::Seek(offset) => p.seek(offset),
                         };
-                    }
-                }
-
-                // Update player reference
-                let finder = PlayerFinder::new();
-                if let Ok(finder) = finder {
-                    if let Some(active_player) = finder.find_active().ok() {
-                        player = Some(active_player);
-                    } else {
-                        player = None;
                     }
                 }
 

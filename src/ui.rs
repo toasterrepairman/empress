@@ -2,6 +2,8 @@ use gtk::prelude::*;
 use gtk::glib;
 use libadwaita as adw;
 use adw::prelude::*;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::mpris_client::{MprisClient, MediaInfo, PlayerStatus};
 use crate::progress_ring_button::ProgressRingButton;
@@ -58,8 +60,14 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
     let art_container = content.art_container.downgrade();
     let play_pause_button = content.play_pause_button.downgrade();
 
+    // Track last known art URL, when we last tried to load it, and if it was successfully loaded (for HTTP URLs)
+    let last_art_info = Arc::new(Mutex::new((None::<String>, Instant::now(), false)));
+
+    // Clone for the first closure
+    let last_art_info_for_updates = last_art_info.clone();
+
     // Poll the receiver from the main GTK thread
-    glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+    glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
         // Process all available messages
         while let Ok(info) = media_receiver.try_recv() {
             let title_label = title_label.upgrade();
@@ -73,8 +81,150 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
                 (title_label, artist_label, album_label, album_art, art_container, play_pause_button)
             {
                 update_ui_widgets(&title_label, &artist_label, &album_label, &album_art, &art_container, &play_pause_button, &info);
+
+                // Update last known art URL when it changes
+                if let Some(ref art_url) = info.art_url {
+                    if let Ok(mut last_info) = last_art_info_for_updates.lock() {
+                        if last_info.0.as_ref() != Some(art_url) {
+                            let is_http = art_url.starts_with("http://") || art_url.starts_with("https://");
+                            *last_info = (Some(art_url.clone()), Instant::now(), !is_http); // Only set loaded=true for non-HTTP URLs initially
+                        }
+                    }
+                }
             }
         }
+        glib::ControlFlow::Continue
+    });
+
+    // Start improved periodic art check (every 3 seconds to reduce excessive retries)
+    let album_art_clone = content.album_art.clone();
+    let art_container_clone = content.art_container.clone();
+    let last_art_info_clone = last_art_info.clone();
+
+    glib::timeout_add_local(Duration::from_millis(3000), move || {
+        let album_art = album_art_clone.clone();
+        let art_container = art_container_clone.clone();
+        let last_art_info = last_art_info_clone.clone();
+
+        // Check if we should retry art loading
+        let (should_retry, art_url_to_retry) = if let Ok(last_info) = last_art_info.lock() {
+            let (ref last_art_url, last_attempt_time, already_loaded) = *last_info;
+
+            // Retry conditions:
+            // 1. We have an art URL
+            // 2. Either container is not visible (failed load) OR art has no paintable (load issue) OR not yet loaded (for HTTP URLs)
+            // 3. Enough time has passed since last attempt
+            if let Some(ref art_url) = last_art_url {
+                let is_http = art_url.starts_with("http://") || art_url.starts_with("https://");
+                let should_retry = (!art_container.is_visible() || album_art.paintable().is_none() || (is_http && !already_loaded))
+                    && last_attempt_time.elapsed() >= Duration::from_millis(3000);
+                (should_retry, Some(art_url.clone()))
+            } else {
+                (false, None)
+            }
+        } else {
+            (false, None)
+        };
+
+        if let Some(art_url) = art_url_to_retry {
+            if should_retry {
+                // Better URL handling: strip "file://" and handle URL encoding
+                let file_path = if let Some(stripped) = art_url.strip_prefix("file://") {
+                    stripped
+                } else {
+                    &art_url
+                };
+
+                // Handle different types of art URLs
+                if art_url.starts_with("http://") || art_url.starts_with("https://") {
+                    // For web URLs, download the image data first
+                    match reqwest::blocking::get(art_url.as_str()) {
+                        Ok(response) => {
+                            match response.bytes() {
+                                Ok(bytes) => {
+                                    let bytes_vec = bytes.to_vec();
+                                    // Create a memory input stream from the bytes
+                                    let stream = gio::MemoryInputStream::from_bytes(&glib::Bytes::from(&bytes_vec));
+                                    // Use GdkPixbuf's from_stream method which can handle various image formats
+                                    match gdk_pixbuf::Pixbuf::from_stream(&stream, gio::Cancellable::NONE) {
+                                        Ok(pixbuf) => {
+                                            let texture = gdk::Texture::for_pixbuf(&pixbuf);
+                                            album_art.set_paintable(Some(&texture));
+                                            art_container.set_visible(true);
+                                            eprintln!("Successfully loaded art from web: {}", art_url);
+
+                                            // Mark as loaded to prevent further retries
+                                            if let Ok(mut last_info) = last_art_info.lock() {
+                                                *last_info = (Some(art_url.clone()), Instant::now(), true);
+                                            }
+                                        }
+                                        Err(e) => {
+                                            eprintln!("Retry failed to create pixbuf from web data {}: {}", art_url, e);
+                                            // Update the last attempt time
+                                            if let Ok(mut last_info) = last_art_info.lock() {
+                                                *last_info = (Some(art_url), Instant::now(), false);
+                                            }
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("Retry failed to read bytes from web {}: {}", art_url, e);
+                                    // Update the last attempt time
+                                    if let Ok(mut last_info) = last_art_info.lock() {
+                                        *last_info = (Some(art_url), Instant::now(), false);
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Retry failed to download image from web {}: {}", art_url, e);
+                            // Update the last attempt time
+                            if let Ok(mut last_info) = last_art_info.lock() {
+                                *last_info = (Some(art_url), Instant::now(), false);
+                            }
+                        }
+                    }
+                } else {
+                    // For file:// or local paths, decode and load from filesystem
+                    // Handle URL encoding for special characters
+                    let decoded_path = urlencoding::decode(file_path).unwrap_or_else(|_| file_path.into());
+                    let decoded_path_str = decoded_path.as_ref();
+
+                    // Try to load the art file with better error handling
+                    match std::path::Path::new(decoded_path_str).exists() {
+                        true => {
+                            match gdk_pixbuf::Pixbuf::from_file(decoded_path_str) {
+                                Ok(pixbuf) => {
+                                    let texture = gdk::Texture::for_pixbuf(&pixbuf);
+                                    album_art.set_paintable(Some(&texture));
+                                    art_container.set_visible(true);
+
+                                    // Clear the last art URL since we succeeded
+                                    if let Ok(mut last_info) = last_art_info.lock() {
+                                        *last_info = (None, Instant::now(), false);
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("Retry failed to load pixbuf from {}: {}", decoded_path, e);
+                                    // Update the last attempt time
+                                    if let Ok(mut last_info) = last_art_info.lock() {
+                                        *last_info = (Some(art_url), Instant::now(), false);
+                                    }
+                                }
+                            }
+                        }
+                        false => {
+                            eprintln!("Retry: Art file still does not exist: {}", decoded_path);
+                            // Update the last attempt time even if file doesn't exist
+                            if let Ok(mut last_info) = last_art_info.lock() {
+                                *last_info = (Some(art_url), Instant::now(), false);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         glib::ControlFlow::Continue
     });
 
@@ -129,7 +279,6 @@ fn build_content() -> MediaContent {
         .halign(gtk::Align::Center)
         .valign(gtk::Align::Center)
         .can_shrink(true)
-        .keep_aspect_ratio(true)
         .content_fit(gtk::ContentFit::Cover)
         .vexpand(false)
         .hexpand(false)
@@ -237,24 +386,82 @@ fn update_ui_widgets(
     artist_label.set_visible(!info.artist.is_empty());
     album_label.set_visible(!info.album.is_empty());
 
-    // Always update art container visibility based on current art availability
+    // Handle album art loading with better error handling
     if let Some(ref art_url) = info.art_url {
-        let url = art_url.strip_prefix("file://").unwrap_or(art_url);
+        // Better URL handling: strip "file://" and handle URL encoding
+        let file_path = if let Some(stripped) = art_url.strip_prefix("file://") {
+            stripped
+        } else {
+            art_url
+        };
 
-        match gdk_pixbuf::Pixbuf::from_file(url) {
-            Ok(pixbuf) => {
-                let texture = gdk::Texture::for_pixbuf(&pixbuf);
-                album_art.set_paintable(Some(&texture));
-                art_container.set_visible(true);
+        // Handle different types of art URLs
+        if art_url.starts_with("http://") || art_url.starts_with("https://") {
+            // For web URLs, download the image data first
+            match reqwest::blocking::get(art_url.as_str()) {
+                Ok(response) => {
+                    match response.bytes() {
+                        Ok(bytes) => {
+                            let bytes_vec = bytes.to_vec();
+                            // Create a memory input stream from the bytes
+                            let stream = gio::MemoryInputStream::from_bytes(&glib::Bytes::from(&bytes_vec));
+                            // Use GdkPixbuf's from_stream method which can handle various image formats
+                            match gdk_pixbuf::Pixbuf::from_stream(&stream, gio::Cancellable::NONE) {
+                                Ok(pixbuf) => {
+                                    let texture = gdk::Texture::for_pixbuf(&pixbuf);
+                                    album_art.set_paintable(Some(&texture));
+                                    art_container.set_visible(true);
+                                    // Only log on initial load, not on retry mechanism
+                                    // Retry mechanism will handle logging
+                                }
+                                Err(e) => {
+                                    eprintln!("Failed to create pixbuf from web data {}: {}", art_url, e);
+                                    album_art.set_paintable(gtk::gdk::Paintable::NONE);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to read bytes from web {}: {}", art_url, e);
+                            album_art.set_paintable(gtk::gdk::Paintable::NONE);
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Failed to download image from web {}: {}", art_url, e);
+                    album_art.set_paintable(gtk::gdk::Paintable::NONE);
+                }
             }
-            Err(_) => {
-                // Failed to load art, hide container
-                album_art.set_paintable(gtk::gdk::Paintable::NONE);
-                art_container.set_visible(false);
+        } else {
+            // For file:// or local paths, decode and load from filesystem
+            // Handle URL encoding for special characters
+            let decoded_path = urlencoding::decode(file_path).unwrap_or_else(|_| file_path.into());
+            let decoded_path_str = decoded_path.as_ref();
+
+            // Try to load the art file
+            match std::path::Path::new(decoded_path_str).exists() {
+                true => {
+                    match gdk_pixbuf::Pixbuf::from_file(decoded_path_str) {
+                        Ok(pixbuf) => {
+                            let texture = gdk::Texture::for_pixbuf(&pixbuf);
+                            album_art.set_paintable(Some(&texture));
+                            art_container.set_visible(true);
+                            eprintln!("Successfully loaded art from file: {}", decoded_path);
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to load pixbuf from {}: {}", decoded_path, e);
+                            // Don't hide container immediately - let retry mechanism handle it
+                            album_art.set_paintable(gtk::gdk::Paintable::NONE);
+                        }
+                    }
+                }
+                false => {
+                    eprintln!("Art file does not exist: {}", decoded_path);
+                    album_art.set_paintable(gtk::gdk::Paintable::NONE);
+                }
             }
         }
     } else {
-        // No art URL provided, hide container
+        // No art URL provided, clear art and hide container
         album_art.set_paintable(gtk::gdk::Paintable::NONE);
         art_container.set_visible(false);
     }
