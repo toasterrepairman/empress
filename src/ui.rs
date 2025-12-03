@@ -80,7 +80,14 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
             if let (Some(title_label), Some(artist_label), Some(album_label), Some(album_art), Some(art_container), Some(play_pause_button)) =
                 (title_label, artist_label, album_label, album_art, art_container, play_pause_button)
             {
-                update_ui_widgets(&title_label, &artist_label, &album_label, &album_art, &art_container, &play_pause_button, &info);
+                // Check if art URL has changed to determine if we should force art update
+                let force_art_update = if let Ok(last_info) = last_art_info_for_updates.lock() {
+                    last_info.0.as_ref() != info.art_url.as_ref()
+                } else {
+                    true // If we can't check, assume we need to update
+                };
+
+                update_ui_widgets(&title_label, &artist_label, &album_label, &album_art, &art_container, &play_pause_button, &info, force_art_update);
 
                 // Update last known art URL when it changes
                 if let Some(ref art_url) = info.art_url {
@@ -378,6 +385,7 @@ fn update_ui_widgets(
     art_container: &gtk::Box,
     play_pause_button: &ProgressRingButton,
     info: &MediaInfo,
+    force_art_update: bool,
 ) {
     title_label.set_text(&info.title);
     artist_label.set_text(&info.artist);
@@ -386,84 +394,87 @@ fn update_ui_widgets(
     artist_label.set_visible(!info.artist.is_empty());
     album_label.set_visible(!info.album.is_empty());
 
-    // Handle album art loading with better error handling
-    if let Some(ref art_url) = info.art_url {
-        // Better URL handling: strip "file://" and handle URL encoding
-        let file_path = if let Some(stripped) = art_url.strip_prefix("file://") {
-            stripped
-        } else {
-            art_url
-        };
+    // Handle album art loading with better error handling - only update when forced
+    if force_art_update {
 
-        // Handle different types of art URLs
-        if art_url.starts_with("http://") || art_url.starts_with("https://") {
-            // For web URLs, download the image data first
-            match reqwest::blocking::get(art_url.as_str()) {
-                Ok(response) => {
-                    match response.bytes() {
-                        Ok(bytes) => {
-                            let bytes_vec = bytes.to_vec();
-                            // Create a memory input stream from the bytes
-                            let stream = gio::MemoryInputStream::from_bytes(&glib::Bytes::from(&bytes_vec));
-                            // Use GdkPixbuf's from_stream method which can handle various image formats
-                            match gdk_pixbuf::Pixbuf::from_stream(&stream, gio::Cancellable::NONE) {
-                                Ok(pixbuf) => {
-                                    let texture = gdk::Texture::for_pixbuf(&pixbuf);
-                                    album_art.set_paintable(Some(&texture));
-                                    art_container.set_visible(true);
-                                    // Only log on initial load, not on retry mechanism
-                                    // Retry mechanism will handle logging
-                                }
-                                Err(e) => {
-                                    eprintln!("Failed to create pixbuf from web data {}: {}", art_url, e);
-                                    album_art.set_paintable(gtk::gdk::Paintable::NONE);
+        if let Some(ref art_url) = info.art_url {
+            // Better URL handling: strip "file://" and handle URL encoding
+            let file_path = if let Some(stripped) = art_url.strip_prefix("file://") {
+                stripped
+            } else {
+                art_url
+            };
+
+            // Handle different types of art URLs
+            if art_url.starts_with("http://") || art_url.starts_with("https://") {
+                // For web URLs, download the image data first
+                match reqwest::blocking::get(art_url.as_str()) {
+                    Ok(response) => {
+                        match response.bytes() {
+                            Ok(bytes) => {
+                                let bytes_vec = bytes.to_vec();
+                                // Create a memory input stream from the bytes
+                                let stream = gio::MemoryInputStream::from_bytes(&glib::Bytes::from(&bytes_vec));
+                                // Use GdkPixbuf's from_stream method which can handle various image formats
+                                match gdk_pixbuf::Pixbuf::from_stream(&stream, gio::Cancellable::NONE) {
+                                    Ok(pixbuf) => {
+                                        let texture = gdk::Texture::for_pixbuf(&pixbuf);
+                                        album_art.set_paintable(Some(&texture));
+                                        art_container.set_visible(true);
+                                        // Only log on initial load, not on retry mechanism
+                                        // Retry mechanism will handle logging
+                                    }
+                                    Err(e) => {
+                                        eprintln!("Failed to create pixbuf from web data {}: {}", art_url, e);
+                                        album_art.set_paintable(gtk::gdk::Paintable::NONE);
+                                    }
                                 }
                             }
-                        }
-                        Err(e) => {
-                            eprintln!("Failed to read bytes from web {}: {}", art_url, e);
-                            album_art.set_paintable(gtk::gdk::Paintable::NONE);
+                            Err(e) => {
+                                eprintln!("Failed to read bytes from web {}: {}", art_url, e);
+                                album_art.set_paintable(gtk::gdk::Paintable::NONE);
+                            }
                         }
                     }
+                    Err(e) => {
+                        eprintln!("Failed to download image from web {}: {}", art_url, e);
+                        album_art.set_paintable(gtk::gdk::Paintable::NONE);
+                    }
                 }
-                Err(e) => {
-                    eprintln!("Failed to download image from web {}: {}", art_url, e);
-                    album_art.set_paintable(gtk::gdk::Paintable::NONE);
+            } else {
+                // For file:// or local paths, decode and load from filesystem
+                // Handle URL encoding for special characters
+                let decoded_path = urlencoding::decode(file_path).unwrap_or_else(|_| file_path.into());
+                let decoded_path_str = decoded_path.as_ref();
+
+                // Try to load the art file
+                match std::path::Path::new(decoded_path_str).exists() {
+                    true => {
+                        match gdk_pixbuf::Pixbuf::from_file(decoded_path_str) {
+                            Ok(pixbuf) => {
+                                let texture = gdk::Texture::for_pixbuf(&pixbuf);
+                                album_art.set_paintable(Some(&texture));
+                                art_container.set_visible(true);
+                                eprintln!("Successfully loaded art from file: {}", decoded_path);
+                            }
+                            Err(e) => {
+                                eprintln!("Failed to load pixbuf from {}: {}", decoded_path, e);
+                                // Don't hide container immediately - let retry mechanism handle it
+                                album_art.set_paintable(gtk::gdk::Paintable::NONE);
+                            }
+                        }
+                    }
+                    false => {
+                        eprintln!("Art file does not exist: {}", decoded_path);
+                        album_art.set_paintable(gtk::gdk::Paintable::NONE);
+                    }
                 }
             }
         } else {
-            // For file:// or local paths, decode and load from filesystem
-            // Handle URL encoding for special characters
-            let decoded_path = urlencoding::decode(file_path).unwrap_or_else(|_| file_path.into());
-            let decoded_path_str = decoded_path.as_ref();
-
-            // Try to load the art file
-            match std::path::Path::new(decoded_path_str).exists() {
-                true => {
-                    match gdk_pixbuf::Pixbuf::from_file(decoded_path_str) {
-                        Ok(pixbuf) => {
-                            let texture = gdk::Texture::for_pixbuf(&pixbuf);
-                            album_art.set_paintable(Some(&texture));
-                            art_container.set_visible(true);
-                            eprintln!("Successfully loaded art from file: {}", decoded_path);
-                        }
-                        Err(e) => {
-                            eprintln!("Failed to load pixbuf from {}: {}", decoded_path, e);
-                            // Don't hide container immediately - let retry mechanism handle it
-                            album_art.set_paintable(gtk::gdk::Paintable::NONE);
-                        }
-                    }
-                }
-                false => {
-                    eprintln!("Art file does not exist: {}", decoded_path);
-                    album_art.set_paintable(gtk::gdk::Paintable::NONE);
-                }
-            }
+            // No art URL provided, clear art and hide container
+            album_art.set_paintable(gtk::gdk::Paintable::NONE);
+            art_container.set_visible(false);
         }
-    } else {
-        // No art URL provided, clear art and hide container
-        album_art.set_paintable(gtk::gdk::Paintable::NONE);
-        art_container.set_visible(false);
     }
 
     let is_paused = match info.status {
