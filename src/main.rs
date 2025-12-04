@@ -29,8 +29,6 @@ fn load_css() {
         r#"
         .album-art {
             border-radius: 18px;
-            min-width: 200px;
-            min-height: 200px;
         }
 
         .album-art picture {

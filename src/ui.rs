@@ -103,12 +103,12 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
         glib::ControlFlow::Continue
     });
 
-    // Start improved periodic art check (every 3 seconds to reduce excessive retries)
+    // Start periodic art check (every 5 seconds to reduce excessive retries and flashing)
     let album_art_clone = content.album_art.clone();
     let art_container_clone = content.art_container.clone();
     let last_art_info_clone = last_art_info.clone();
 
-    glib::timeout_add_local(Duration::from_millis(3000), move || {
+    glib::timeout_add_local(Duration::from_millis(5000), move || {
         let album_art = album_art_clone.clone();
         let art_container = art_container_clone.clone();
         let last_art_info = last_art_info_clone.clone();
@@ -124,7 +124,7 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
             if let Some(ref art_url) = last_art_url {
                 let is_http = art_url.starts_with("http://") || art_url.starts_with("https://");
                 let should_retry = (!art_container.is_visible() || album_art.paintable().is_none() || (is_http && !already_loaded))
-                    && last_attempt_time.elapsed() >= Duration::from_millis(3000);
+                    && last_attempt_time.elapsed() >= Duration::from_millis(5000);
                 (should_retry, Some(art_url.clone()))
             } else {
                 (false, None)
@@ -286,9 +286,11 @@ fn build_content() -> MediaContent {
         .halign(gtk::Align::Center)
         .valign(gtk::Align::Center)
         .can_shrink(true)
-        .content_fit(gtk::ContentFit::Cover)
-        .vexpand(false)
-        .hexpand(false)
+        .content_fit(gtk::ContentFit::Contain)
+        .vexpand(true)
+        .hexpand(true)
+        .width_request(120)
+        .height_request(120)
         .css_classes(vec!["album-art"])
         .build();
 
