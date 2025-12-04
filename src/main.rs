@@ -27,13 +27,7 @@ fn load_css() {
     let provider = gtk::CssProvider::new();
     provider.load_from_string(
         r#"
-        .album-art {
-            border-radius: 18px;
-        }
 
-        .album-art picture {
-            border-radius: 18px;
-        }
         "#,
     );
 
