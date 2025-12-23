@@ -1,5 +1,6 @@
 use gtk::prelude::*;
 use gtk::glib;
+use gtk::{StringObject};
 use libadwaita as adw;
 use adw::prelude::*;
 use std::sync::{Arc, Mutex};
@@ -19,6 +20,20 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
     window.set_size_request(200, 200);
 
     let header_bar = adw::HeaderBar::new();
+    header_bar.set_show_title(false);
+
+    // Create combo box for player selection
+    let player_list = gtk::StringList::new(&[]);
+    let player_combo = gtk::DropDown::builder()
+        .model(&player_list)
+        .tooltip_text("Select MPRIS player")
+        .build();
+
+    // Add "Auto" option as default
+    player_list.append("Auto");
+
+    // Pack the combo box into the header bar
+    header_bar.pack_end(&player_combo);
 
     let main_box = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
@@ -45,13 +60,69 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
     });
     content.art_container.add_controller(drag_gesture);
 
-    toolbar_view.set_content(Some(&content.container));
+    toolbar_view.set_content(Some(&content.clamp));
 
     main_box.append(&toolbar_view);
     window.set_content(Some(&main_box));
 
     let mpris_client = MprisClient::new();
     let media_receiver = mpris_client.start_monitoring();
+
+    // Set up player combo box functionality
+    let player_list_clone = player_list.clone();
+    let player_combo_clone = player_combo.clone();
+    let mpris_client_for_combo = mpris_client.clone();
+
+    // Refresh player list every 5 seconds
+    glib::timeout_add_local(Duration::from_secs(5), move || {
+        // Get current selection
+        let current_selected = player_combo_clone.selected();
+
+        // Clear and repopulate (keeping "Auto" at index 0)
+        while player_list_clone.n_items() > 1 {
+            player_list_clone.remove(1);
+        }
+
+        let available = MprisClient::get_available_players();
+        for player in &available {
+            player_list_clone.append(player);
+        }
+
+        // Restore selection if possible
+        if current_selected < player_list_clone.n_items() {
+            let _ = player_combo_clone.set_selected(current_selected);
+        }
+
+        glib::ControlFlow::Continue
+    });
+
+    // Initial population
+    {
+        let available = MprisClient::get_available_players();
+        for player in &available {
+            player_list.append(player);
+        }
+    }
+
+    // Handle player selection changes
+    player_combo.connect_selected_item_notify({
+        let mpris_client = mpris_client_for_combo.clone();
+        move |combo| {
+            let selected = combo.selected();
+            if selected == 0 {
+                // "Auto" selected - clear preferred player
+                mpris_client.set_preferred_player(None);
+            } else {
+                // Specific player selected
+                if let Some(item) = combo.selected_item() {
+                    if let Some(str_obj) = item.downcast_ref::<StringObject>() {
+                        let player_name = str_obj.string().to_string();
+                        mpris_client.set_preferred_player(Some(player_name));
+                    }
+                }
+            }
+        }
+    });
 
     let title_label = content.title_label.downgrade();
     let artist_label = content.artist_label.downgrade();
@@ -60,11 +131,9 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
     let art_container = content.art_container.downgrade();
     let play_pause_button = content.play_pause_button.downgrade();
 
-    // Track last known art URL, when we last tried to load it, and if it was successfully loaded (for HTTP URLs)
-    let last_art_info = Arc::new(Mutex::new((None::<String>, Instant::now(), false)));
-
-    // Clone for the first closure
-    let last_art_info_for_updates = last_art_info.clone();
+    // Track last known art URL to detect changes
+    let last_art_url = Arc::new(Mutex::new(None::<String>));
+    let last_art_url_for_updates = last_art_url.clone();
 
     // Poll the receiver from the main GTK thread
     glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
@@ -81,157 +150,24 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
                 (title_label, artist_label, album_label, album_art, art_container, play_pause_button)
             {
                 // Check if art URL has changed to determine if we should force art update
-                let force_art_update = if let Ok(last_info) = last_art_info_for_updates.lock() {
-                    last_info.0.as_ref() != info.art_url.as_ref()
+                let force_art_update = if let Ok(last_url) = last_art_url_for_updates.lock() {
+                    last_url.as_ref() != info.art_url.as_ref()
                 } else {
-                    true // If we can't check, assume we need to update
+                    true
                 };
 
                 update_ui_widgets(&title_label, &artist_label, &album_label, &album_art, &art_container, &play_pause_button, &info, force_art_update);
 
                 // Update last known art URL when it changes
                 if let Some(ref art_url) = info.art_url {
-                    if let Ok(mut last_info) = last_art_info_for_updates.lock() {
-                        if last_info.0.as_ref() != Some(art_url) {
-                            let is_http = art_url.starts_with("http://") || art_url.starts_with("https://");
-                            *last_info = (Some(art_url.clone()), Instant::now(), !is_http); // Only set loaded=true for non-HTTP URLs initially
+                    if let Ok(mut last_url) = last_art_url_for_updates.lock() {
+                        if last_url.as_ref() != Some(art_url) {
+                            *last_url = Some(art_url.clone());
                         }
                     }
                 }
             }
         }
-        glib::ControlFlow::Continue
-    });
-
-    // Start periodic art check (every 5 seconds to reduce excessive retries and flashing)
-    let album_art_clone = content.album_art.clone();
-    let art_container_clone = content.art_container.clone();
-    let last_art_info_clone = last_art_info.clone();
-
-    glib::timeout_add_local(Duration::from_millis(5000), move || {
-        let album_art = album_art_clone.clone();
-        let art_container = art_container_clone.clone();
-        let last_art_info = last_art_info_clone.clone();
-
-        // Check if we should retry art loading
-        let (should_retry, art_url_to_retry) = if let Ok(last_info) = last_art_info.lock() {
-            let (ref last_art_url, last_attempt_time, already_loaded) = *last_info;
-
-            // Retry conditions:
-            // 1. We have an art URL
-            // 2. Either container is not visible (failed load) OR art has no paintable (load issue) OR not yet loaded (for HTTP URLs)
-            // 3. Enough time has passed since last attempt
-            if let Some(ref art_url) = last_art_url {
-                let is_http = art_url.starts_with("http://") || art_url.starts_with("https://");
-                let should_retry = (!art_container.is_visible() || album_art.paintable().is_none() || (is_http && !already_loaded))
-                    && last_attempt_time.elapsed() >= Duration::from_millis(5000);
-                (should_retry, Some(art_url.clone()))
-            } else {
-                (false, None)
-            }
-        } else {
-            (false, None)
-        };
-
-        if let Some(art_url) = art_url_to_retry {
-            if should_retry {
-                // Better URL handling: strip "file://" and handle URL encoding
-                let file_path = if let Some(stripped) = art_url.strip_prefix("file://") {
-                    stripped
-                } else {
-                    &art_url
-                };
-
-                // Handle different types of art URLs
-                if art_url.starts_with("http://") || art_url.starts_with("https://") {
-                    // For web URLs, download the image data first
-                    match reqwest::blocking::get(art_url.as_str()) {
-                        Ok(response) => {
-                            match response.bytes() {
-                                Ok(bytes) => {
-                                    let bytes_vec = bytes.to_vec();
-                                    // Create a memory input stream from the bytes
-                                    let stream = gio::MemoryInputStream::from_bytes(&glib::Bytes::from(&bytes_vec));
-                                    // Use GdkPixbuf's from_stream method which can handle various image formats
-                                    match gdk_pixbuf::Pixbuf::from_stream(&stream, gio::Cancellable::NONE) {
-                                        Ok(pixbuf) => {
-                                            let texture = gdk::Texture::for_pixbuf(&pixbuf);
-                                            album_art.set_paintable(Some(&texture));
-                                            art_container.set_visible(true);
-                                            eprintln!("Successfully loaded art from web: {}", art_url);
-
-                                            // Mark as loaded to prevent further retries
-                                            if let Ok(mut last_info) = last_art_info.lock() {
-                                                *last_info = (Some(art_url.clone()), Instant::now(), true);
-                                            }
-                                        }
-                                        Err(e) => {
-                                            eprintln!("Retry failed to create pixbuf from web data {}: {}", art_url, e);
-                                            // Update the last attempt time
-                                            if let Ok(mut last_info) = last_art_info.lock() {
-                                                *last_info = (Some(art_url), Instant::now(), false);
-                                            }
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    eprintln!("Retry failed to read bytes from web {}: {}", art_url, e);
-                                    // Update the last attempt time
-                                    if let Ok(mut last_info) = last_art_info.lock() {
-                                        *last_info = (Some(art_url), Instant::now(), false);
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("Retry failed to download image from web {}: {}", art_url, e);
-                            // Update the last attempt time
-                            if let Ok(mut last_info) = last_art_info.lock() {
-                                *last_info = (Some(art_url), Instant::now(), false);
-                            }
-                        }
-                    }
-                } else {
-                    // For file:// or local paths, decode and load from filesystem
-                    // Handle URL encoding for special characters
-                    let decoded_path = urlencoding::decode(file_path).unwrap_or_else(|_| file_path.into());
-                    let decoded_path_str = decoded_path.as_ref();
-
-                    // Try to load the art file with better error handling
-                    match std::path::Path::new(decoded_path_str).exists() {
-                        true => {
-                            match gdk_pixbuf::Pixbuf::from_file(decoded_path_str) {
-                                Ok(pixbuf) => {
-                                    let texture = gdk::Texture::for_pixbuf(&pixbuf);
-                                    album_art.set_paintable(Some(&texture));
-                                    art_container.set_visible(true);
-
-                                    // Clear the last art URL since we succeeded
-                                    if let Ok(mut last_info) = last_art_info.lock() {
-                                        *last_info = (None, Instant::now(), false);
-                                    }
-                                }
-                                Err(e) => {
-                                    eprintln!("Retry failed to load pixbuf from {}: {}", decoded_path, e);
-                                    // Update the last attempt time
-                                    if let Ok(mut last_info) = last_art_info.lock() {
-                                        *last_info = (Some(art_url), Instant::now(), false);
-                                    }
-                                }
-                            }
-                        }
-                        false => {
-                            eprintln!("Retry: Art file still does not exist: {}", decoded_path);
-                            // Update the last attempt time even if file doesn't exist
-                            if let Ok(mut last_info) = last_art_info.lock() {
-                                *last_info = (Some(art_url), Instant::now(), false);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
         glib::ControlFlow::Continue
     });
 
@@ -250,6 +186,7 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
 #[derive(Clone)]
 struct MediaContent {
     container: gtk::Box,
+    clamp: adw::Clamp,
     album_art: gtk::Picture,
     art_container: gtk::Box,
     title_label: gtk::Label,
@@ -261,19 +198,26 @@ struct MediaContent {
 }
 
 fn build_content() -> MediaContent {
+    // Main container using Clamp for content width following HIG
+    let clamp = adw::Clamp::builder()
+        .maximum_size(400)
+        .tightening_threshold(300)
+        .build();
+
     let container = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
-        .spacing(12)
-        .margin_top(12)
-        .margin_bottom(12)
-        .margin_start(12)
-        .margin_end(12)
+        .spacing(18)
+        .margin_top(24)
+        .margin_bottom(24)
+        .margin_start(18)
+        .margin_end(18)
         .valign(gtk::Align::Fill)
         .halign(gtk::Align::Fill)
         .vexpand(true)
         .hexpand(true)
         .build();
 
+    // Art container for album artwork with proper spacing
     let art_container = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .halign(gtk::Align::Center)
@@ -286,21 +230,22 @@ fn build_content() -> MediaContent {
         .halign(gtk::Align::Center)
         .valign(gtk::Align::Center)
         .can_shrink(true)
-        .content_fit(gtk::ContentFit::Contain)
+        .content_fit(gtk::ContentFit::Cover)
         .vexpand(true)
         .hexpand(true)
-        .width_request(120)
-        .height_request(120)
+        .width_request(200)
+        .height_request(200)
         .css_classes(vec!["album-art"])
         .build();
 
     art_container.append(&album_art);
 
+    // Info section using proper Libadwaita patterns
     let info_box = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
-        .spacing(4)
-        .halign(gtk::Align::Fill)
-        .hexpand(true)
+        .spacing(6)
+        .halign(gtk::Align::Center)
+        .margin_top(12)
         .build();
 
     let title_label = gtk::Label::builder()
@@ -311,6 +256,7 @@ fn build_content() -> MediaContent {
         .justify(gtk::Justification::Center)
         .ellipsize(gtk::pango::EllipsizeMode::End)
         .lines(2)
+        .halign(gtk::Align::Center)
         .build();
 
     let artist_label = gtk::Label::builder()
@@ -321,6 +267,7 @@ fn build_content() -> MediaContent {
         .ellipsize(gtk::pango::EllipsizeMode::End)
         .lines(1)
         .opacity(0.7)
+        .halign(gtk::Align::Center)
         .build();
 
     let album_label = gtk::Label::builder()
@@ -331,29 +278,35 @@ fn build_content() -> MediaContent {
         .ellipsize(gtk::pango::EllipsizeMode::End)
         .lines(1)
         .opacity(0.55)
+        .halign(gtk::Align::Center)
         .build();
 
     info_box.append(&title_label);
     info_box.append(&artist_label);
     info_box.append(&album_label);
 
+    // Controls section with improved spacing and sizing
     let controls_box = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
-        .spacing(8)
+        .spacing(12)
         .halign(gtk::Align::Center)
-        .margin_top(8)
+        .margin_top(12)
+        .margin_bottom(6)
         .build();
 
     let prev_button = gtk::Button::builder()
         .icon_name("media-skip-backward-symbolic")
         .css_classes(vec!["circular", "flat"])
+        .tooltip_text("Previous")
         .build();
 
     let play_pause_button = ProgressRingButton::new();
+    play_pause_button.button().set_tooltip_text(Some("Play/Pause"));
 
     let next_button = gtk::Button::builder()
         .icon_name("media-skip-forward-symbolic")
         .css_classes(vec!["circular", "flat"])
+        .tooltip_text("Next")
         .build();
 
     controls_box.append(&prev_button);
@@ -364,10 +317,13 @@ fn build_content() -> MediaContent {
     container.append(&info_box);
     container.append(&controls_box);
 
+    clamp.set_child(Some(&container));
+
     art_container.set_visible(false);
 
     MediaContent {
         container,
+        clamp,
         album_art,
         art_container,
         title_label,

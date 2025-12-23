@@ -66,7 +66,7 @@ mod imp {
                 let rect = graphene::Rect::new(0.0, 0.0, width, height);
                 let cr = snapshot.append_cairo(&rect);
 
-                // Get the theme color
+                // Get the theme color using the new API
                 let style_context = widget.style_context();
                 let color = style_context.color();
 
