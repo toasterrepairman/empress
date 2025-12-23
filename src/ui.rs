@@ -13,11 +13,11 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("Empress")
-        .default_width(400)
-        .default_height(500)
+        .default_width(320)
+        .default_height(400)
         .build();
 
-    window.set_size_request(200, 200);
+    window.set_size_request(150, 150);
 
     let header_bar = adw::HeaderBar::new();
     header_bar.set_show_title(false);
@@ -200,17 +200,17 @@ struct MediaContent {
 fn build_content() -> MediaContent {
     // Main container using Clamp for content width following HIG
     let clamp = adw::Clamp::builder()
-        .maximum_size(400)
-        .tightening_threshold(300)
+        .maximum_size(280)
+        .tightening_threshold(200)
         .build();
 
     let container = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
-        .spacing(18)
-        .margin_top(24)
-        .margin_bottom(24)
-        .margin_start(18)
-        .margin_end(18)
+        .spacing(12)
+        .margin_top(12)
+        .margin_bottom(12)
+        .margin_start(12)
+        .margin_end(12)
         .valign(gtk::Align::Fill)
         .halign(gtk::Align::Fill)
         .vexpand(true)
@@ -222,8 +222,8 @@ fn build_content() -> MediaContent {
         .orientation(gtk::Orientation::Vertical)
         .halign(gtk::Align::Center)
         .valign(gtk::Align::Center)
-        .vexpand(true)
-        .hexpand(true)
+        .vexpand(false)
+        .hexpand(false)
         .build();
 
     let album_art = gtk::Picture::builder()
@@ -233,8 +233,8 @@ fn build_content() -> MediaContent {
         .content_fit(gtk::ContentFit::Cover)
         .vexpand(true)
         .hexpand(true)
-        .width_request(200)
-        .height_request(200)
+        .width_request(100)
+        .height_request(100)
         .css_classes(vec!["album-art"])
         .build();
 
