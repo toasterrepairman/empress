@@ -1,13 +1,28 @@
-use gtk::prelude::*;
-use gtk::glib;
-use gtk::{StringObject};
-use libadwaita as adw;
 use adw::prelude::*;
+use gtk::glib;
+use gtk::prelude::*;
+use gtk::StringObject;
+use libadwaita as adw;
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::mpris_client::{MprisClient, MediaInfo, PlayerStatus};
+use crate::mpris_client::{MediaInfo, MprisClient, PlayerStatus};
 use crate::progress_ring_button::ProgressRingButton;
+
+#[derive(Clone)]
+struct StatusHistoryEntry {
+    status: PlayerStatus,
+    title: String,
+    artist: String,
+    timestamp: Instant,
+}
+
+#[derive(Clone)]
+struct SidebarContent {
+    container: gtk::Box,
+    list_box: gtk::ListBox,
+}
 
 pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
     let window = adw::ApplicationWindow::builder()
@@ -35,13 +50,7 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
     // Pack the combo box into the header bar
     header_bar.pack_end(&player_combo);
 
-    let main_box = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .build();
-
-    let toolbar_view = adw::ToolbarView::new();
-    toolbar_view.add_top_bar(&header_bar);
-
+    let sidebar = build_sidebar();
     let content = build_content();
 
     // Add drag gesture to move window on the album art area only
@@ -60,8 +69,27 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
     });
     content.art_container.add_controller(drag_gesture);
 
-    toolbar_view.set_content(Some(&content.clamp));
+    let main_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .build();
 
+    let toolbar_view = adw::ToolbarView::new();
+    toolbar_view.add_top_bar(&header_bar);
+
+    // Create a horizontal paned for main content and sidebar
+    let paned = gtk::Paned::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .shrink_start_child(false)
+        .shrink_end_child(false)
+        .build();
+
+    paned.set_start_child(Some(&sidebar.container));
+    paned.set_end_child(Some(&content.clamp));
+
+    // Initially hide sidebar
+    sidebar.container.set_visible(false);
+
+    toolbar_view.set_content(Some(&paned));
     main_box.append(&toolbar_view);
     window.set_content(Some(&main_box));
 
@@ -135,6 +163,31 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
     let last_art_url = Arc::new(Mutex::new(None::<String>));
     let last_art_url_for_updates = last_art_url.clone();
 
+    // Track status history
+    let history: Arc<Mutex<VecDeque<StatusHistoryEntry>>> =
+        Arc::new(Mutex::new(VecDeque::with_capacity(50)));
+    let last_status = Arc::new(Mutex::new(PlayerStatus::Stopped));
+    let last_title = Arc::new(Mutex::new(String::new()));
+    let last_artist = Arc::new(Mutex::new(String::new()));
+
+    // Set up window resize handler to show/hide sidebar based on aspect ratio
+    let window_clone = window.clone();
+    let sidebar_clone = sidebar.clone();
+    glib::timeout_add_local(Duration::from_millis(100), move || {
+        let width = window_clone.width() as f64;
+        let height = window_clone.height() as f64;
+        let should_show = width > 1.3 * height;
+        sidebar_clone.container.set_visible(should_show);
+        glib::ControlFlow::Continue
+    });
+
+    // Sidebar references for updates
+    let sidebar_list_box = sidebar.list_box.clone();
+    let history_for_updates = history.clone();
+    let last_status_for_updates = last_status.clone();
+    let last_title_for_updates = last_title.clone();
+    let last_artist_for_updates = last_artist.clone();
+
     // Poll the receiver from the main GTK thread
     glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
         // Process all available messages
@@ -146,9 +199,21 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
             let art_container = art_container.upgrade();
             let play_pause_button = play_pause_button.upgrade();
 
-            if let (Some(title_label), Some(artist_label), Some(album_label), Some(album_art), Some(art_container), Some(play_pause_button)) =
-                (title_label, artist_label, album_label, album_art, art_container, play_pause_button)
-            {
+            if let (
+                Some(title_label),
+                Some(artist_label),
+                Some(album_label),
+                Some(album_art),
+                Some(art_container),
+                Some(play_pause_button),
+            ) = (
+                title_label,
+                artist_label,
+                album_label,
+                album_art,
+                art_container,
+                play_pause_button,
+            ) {
                 // Check if art URL has changed to determine if we should force art update
                 let force_art_update = if let Ok(last_url) = last_art_url_for_updates.lock() {
                     last_url.as_ref() != info.art_url.as_ref()
@@ -156,7 +221,16 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
                     true
                 };
 
-                update_ui_widgets(&title_label, &artist_label, &album_label, &album_art, &art_container, &play_pause_button, &info, force_art_update);
+                update_ui_widgets(
+                    &title_label,
+                    &artist_label,
+                    &album_label,
+                    &album_art,
+                    &art_container,
+                    &play_pause_button,
+                    &info,
+                    force_art_update,
+                );
 
                 // Update last known art URL when it changes
                 if let Some(ref art_url) = info.art_url {
@@ -164,6 +238,57 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
                         if last_url.as_ref() != Some(art_url) {
                             *last_url = Some(art_url.clone());
                         }
+                    }
+                }
+
+                // Check if status has changed and update history
+                let status_changed = if let Ok(last) = last_status_for_updates.lock() {
+                    *last != info.status
+                } else {
+                    true
+                };
+
+                let title_changed = if let Ok(last) = last_title_for_updates.lock() {
+                    *last != info.title
+                } else {
+                    true
+                };
+
+                let artist_changed = if let Ok(last) = last_artist_for_updates.lock() {
+                    *last != info.artist
+                } else {
+                    true
+                };
+
+                if status_changed || title_changed || artist_changed {
+                    // Update last known values
+                    if let Ok(mut last) = last_status_for_updates.lock() {
+                        *last = info.status.clone();
+                    }
+                    if let Ok(mut last) = last_title_for_updates.lock() {
+                        *last = info.title.clone();
+                    }
+                    if let Ok(mut last) = last_artist_for_updates.lock() {
+                        *last = info.artist.clone();
+                    }
+
+                    // Add to history
+                    if let Ok(mut history) = history_for_updates.lock() {
+                        let entry = StatusHistoryEntry {
+                            status: info.status.clone(),
+                            title: info.title.clone(),
+                            artist: info.artist.clone(),
+                            timestamp: Instant::now(),
+                        };
+                        history.push_front(entry);
+
+                        // Limit history size
+                        while history.len() > 50 {
+                            history.pop_back();
+                        }
+
+                        // Update sidebar
+                        update_sidebar(&sidebar_list_box, &history);
                     }
                 }
             }
@@ -301,7 +426,9 @@ fn build_content() -> MediaContent {
         .build();
 
     let play_pause_button = ProgressRingButton::new();
-    play_pause_button.button().set_tooltip_text(Some("Play/Pause"));
+    play_pause_button
+        .button()
+        .set_tooltip_text(Some("Play/Pause"));
 
     let next_button = gtk::Button::builder()
         .icon_name("media-skip-forward-symbolic")
@@ -354,7 +481,6 @@ fn update_ui_widgets(
 
     // Handle album art loading with better error handling - only update when forced
     if force_art_update {
-
         if let Some(ref art_url) = info.art_url {
             // Better URL handling: strip "file://" and handle URL encoding
             let file_path = if let Some(stripped) = art_url.strip_prefix("file://") {
@@ -372,9 +498,14 @@ fn update_ui_widgets(
                             Ok(bytes) => {
                                 let bytes_vec = bytes.to_vec();
                                 // Create a memory input stream from the bytes
-                                let stream = gio::MemoryInputStream::from_bytes(&glib::Bytes::from(&bytes_vec));
+                                let stream = gio::MemoryInputStream::from_bytes(
+                                    &glib::Bytes::from(&bytes_vec),
+                                );
                                 // Use GdkPixbuf's from_stream method which can handle various image formats
-                                match gdk_pixbuf::Pixbuf::from_stream(&stream, gio::Cancellable::NONE) {
+                                match gdk_pixbuf::Pixbuf::from_stream(
+                                    &stream,
+                                    gio::Cancellable::NONE,
+                                ) {
                                     Ok(pixbuf) => {
                                         let texture = gdk::Texture::for_pixbuf(&pixbuf);
                                         album_art.set_paintable(Some(&texture));
@@ -383,7 +514,10 @@ fn update_ui_widgets(
                                         // Retry mechanism will handle logging
                                     }
                                     Err(e) => {
-                                        eprintln!("Failed to create pixbuf from web data {}: {}", art_url, e);
+                                        eprintln!(
+                                            "Failed to create pixbuf from web data {}: {}",
+                                            art_url, e
+                                        );
                                         album_art.set_paintable(gtk::gdk::Paintable::NONE);
                                     }
                                 }
@@ -402,7 +536,8 @@ fn update_ui_widgets(
             } else {
                 // For file:// or local paths, decode and load from filesystem
                 // Handle URL encoding for special characters
-                let decoded_path = urlencoding::decode(file_path).unwrap_or_else(|_| file_path.into());
+                let decoded_path =
+                    urlencoding::decode(file_path).unwrap_or_else(|_| file_path.into());
                 let decoded_path_str = decoded_path.as_ref();
 
                 // Try to load the art file
@@ -483,20 +618,15 @@ fn setup_controls(content: &MediaContent, client: MprisClient) {
     });
 
     // Add scroll event handler for seeking
-    let scroll_controller = gtk::EventControllerScroll::new(
-        gtk::EventControllerScrollFlags::VERTICAL,
-    );
+    let scroll_controller =
+        gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
 
     scroll_controller.connect_scroll({
         let client = client.clone();
         move |_, _dx, dy| {
             // dy > 0 means scrolling down (go back 5 seconds)
             // dy < 0 means scrolling up (go forward 5 seconds)
-            let offset_seconds = if dy > 0.0 {
-                -5
-            } else {
-                5
-            };
+            let offset_seconds = if dy > 0.0 { -5 } else { 5 };
 
             // MPRIS seek uses microseconds
             let offset_micros = offset_seconds * 1_000_000;
@@ -551,4 +681,103 @@ fn setup_keyboard_shortcuts(window: &adw::ApplicationWindow, client: MprisClient
     });
 
     window.add_controller(event_controller);
+}
+
+fn build_sidebar() -> SidebarContent {
+    let container = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(6)
+        .margin_start(6)
+        .margin_end(6)
+        .margin_top(6)
+        .margin_bottom(6)
+        .width_request(200)
+        .build();
+
+    let header_label = gtk::Label::builder()
+        .label("Session History")
+        .css_classes(vec!["heading"])
+        .halign(gtk::Align::Start)
+        .margin_bottom(6)
+        .build();
+
+    let list_box = gtk::ListBox::builder()
+        .css_classes(vec!["boxed-list"])
+        .vexpand(true)
+        .selection_mode(gtk::SelectionMode::None)
+        .build();
+
+    let scrolled_window = gtk::ScrolledWindow::builder()
+        .child(&list_box)
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .propagate_natural_width(true)
+        .build();
+
+    container.append(&header_label);
+    container.append(&scrolled_window);
+
+    SidebarContent {
+        container,
+        list_box,
+    }
+}
+
+fn update_sidebar(list_box: &gtk::ListBox, history: &VecDeque<StatusHistoryEntry>) {
+    // Clear existing children
+    while let Some(child) = list_box.first_child() {
+        list_box.remove(&child);
+    }
+
+    // Add history entries
+    for entry in history {
+        let row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(2)
+            .margin_start(8)
+            .margin_end(8)
+            .margin_top(6)
+            .margin_bottom(6)
+            .build();
+
+        let status_icon = match entry.status {
+            PlayerStatus::Playing => "media-playback-start-symbolic",
+            PlayerStatus::Paused => "media-playback-pause-symbolic",
+            PlayerStatus::Stopped => "media-playback-stop-symbolic",
+        };
+
+        let title_label = gtk::Label::builder()
+            .label(&entry.title)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .halign(gtk::Align::Start)
+            .css_classes(vec!["title-3"])
+            .build();
+
+        let artist_label = gtk::Label::builder()
+            .label(&entry.artist)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .halign(gtk::Align::Start)
+            .opacity(0.7)
+            .build();
+
+        let info_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(6)
+            .build();
+
+        let icon = gtk::Image::builder()
+            .icon_name(status_icon)
+            .pixel_size(16)
+            .build();
+
+        info_row.append(&icon);
+        info_row.append(&title_label);
+
+        row.append(&info_row);
+        if !entry.artist.is_empty() {
+            row.append(&artist_label);
+        }
+
+        list_box.append(&row);
+    }
 }
