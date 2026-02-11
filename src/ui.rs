@@ -170,6 +170,9 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
     let last_title = Arc::new(Mutex::new(String::new()));
     let last_artist = Arc::new(Mutex::new(String::new()));
 
+    // Track if initial load has been done
+    let initial_load_done = Arc::new(Mutex::new(false));
+
     // Set up window resize handler to show/hide sidebar based on aspect ratio
     let window_clone = window.clone();
     let sidebar_clone = sidebar.clone();
@@ -214,12 +217,32 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
                 art_container,
                 play_pause_button,
             ) {
-                // Check if art URL has changed to determine if we should force art update
-                let force_art_update = if let Ok(last_url) = last_art_url_for_updates.lock() {
+                // Check if we need to force art update (URL changed, title changed, or artist changed)
+                let title_changed = if let Ok(last) = last_title_for_updates.lock() {
+                    *last != info.title
+                } else {
+                    true
+                };
+
+                let artist_changed = if let Ok(last) = last_artist_for_updates.lock() {
+                    *last != info.artist
+                } else {
+                    true
+                };
+
+                let url_changed = if let Ok(last_url) = last_art_url_for_updates.lock() {
                     last_url.as_ref() != info.art_url.as_ref()
                 } else {
                     true
                 };
+
+                let is_initial = if let Ok(initial) = initial_load_done.lock() {
+                    !*initial
+                } else {
+                    true
+                };
+
+                let force_art_update = is_initial || url_changed || title_changed || artist_changed;
 
                 update_ui_widgets(
                     &title_label,
@@ -232,30 +255,25 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
                     force_art_update,
                 );
 
-                // Update last known art URL when it changes
-                if let Some(ref art_url) = info.art_url {
-                    if let Ok(mut last_url) = last_art_url_for_updates.lock() {
-                        if last_url.as_ref() != Some(art_url) {
+                // Update last known values when they change
+                if url_changed || title_changed || artist_changed {
+                    if let Some(ref art_url) = info.art_url {
+                        if let Ok(mut last_url) = last_art_url_for_updates.lock() {
                             *last_url = Some(art_url.clone());
                         }
+                    }
+                }
+
+                // Mark initial load as done
+                if is_initial {
+                    if let Ok(mut initial) = initial_load_done.lock() {
+                        *initial = true;
                     }
                 }
 
                 // Check if status has changed and update history
                 let status_changed = if let Ok(last) = last_status_for_updates.lock() {
                     *last != info.status
-                } else {
-                    true
-                };
-
-                let title_changed = if let Ok(last) = last_title_for_updates.lock() {
-                    *last != info.title
-                } else {
-                    true
-                };
-
-                let artist_changed = if let Ok(last) = last_artist_for_updates.lock() {
-                    *last != info.artist
                 } else {
                     true
                 };
@@ -481,7 +499,11 @@ fn update_ui_widgets(
 
     // Handle album art loading with better error handling - only update when forced
     if force_art_update {
-        if let Some(ref art_url) = info.art_url {
+        // Clear existing art before loading new art
+        if !info.art_url.is_some() || info.art_url.as_ref().map_or(true, |u| u.is_empty()) {
+            album_art.set_paintable(gtk::gdk::Paintable::NONE);
+            art_container.set_visible(false);
+        } else if let Some(ref art_url) = info.art_url {
             // Better URL handling: strip "file://" and handle URL encoding
             let file_path = if let Some(stripped) = art_url.strip_prefix("file://") {
                 stripped
@@ -491,6 +513,9 @@ fn update_ui_widgets(
 
             // Handle different types of art URLs
             if art_url.starts_with("http://") || art_url.starts_with("https://") {
+                // Clear art before attempting to load new art
+                album_art.set_paintable(gtk::gdk::Paintable::NONE);
+
                 // For web URLs, download the image data first
                 match reqwest::blocking::get(art_url.as_str()) {
                     Ok(response) => {
@@ -510,6 +535,7 @@ fn update_ui_widgets(
                                         let texture = gdk::Texture::for_pixbuf(&pixbuf);
                                         album_art.set_paintable(Some(&texture));
                                         art_container.set_visible(true);
+                                        album_art.queue_draw();
                                         // Only log on initial load, not on retry mechanism
                                         // Retry mechanism will handle logging
                                     }
@@ -519,18 +545,21 @@ fn update_ui_widgets(
                                             art_url, e
                                         );
                                         album_art.set_paintable(gtk::gdk::Paintable::NONE);
+                                        art_container.set_visible(false);
                                     }
                                 }
                             }
                             Err(e) => {
                                 eprintln!("Failed to read bytes from web {}: {}", art_url, e);
                                 album_art.set_paintable(gtk::gdk::Paintable::NONE);
+                                art_container.set_visible(false);
                             }
                         }
                     }
                     Err(e) => {
                         eprintln!("Failed to download image from web {}: {}", art_url, e);
                         album_art.set_paintable(gtk::gdk::Paintable::NONE);
+                        art_container.set_visible(false);
                     }
                 }
             } else {
@@ -540,26 +569,29 @@ fn update_ui_widgets(
                     urlencoding::decode(file_path).unwrap_or_else(|_| file_path.into());
                 let decoded_path_str = decoded_path.as_ref();
 
+                // Clear art before attempting to load new art
+                album_art.set_paintable(gtk::gdk::Paintable::NONE);
+
                 // Try to load the art file
                 match std::path::Path::new(decoded_path_str).exists() {
-                    true => {
-                        match gdk_pixbuf::Pixbuf::from_file(decoded_path_str) {
-                            Ok(pixbuf) => {
-                                let texture = gdk::Texture::for_pixbuf(&pixbuf);
-                                album_art.set_paintable(Some(&texture));
-                                art_container.set_visible(true);
-                                eprintln!("Successfully loaded art from file: {}", decoded_path);
-                            }
-                            Err(e) => {
-                                eprintln!("Failed to load pixbuf from {}: {}", decoded_path, e);
-                                // Don't hide container immediately - let retry mechanism handle it
-                                album_art.set_paintable(gtk::gdk::Paintable::NONE);
-                            }
+                    true => match gdk_pixbuf::Pixbuf::from_file(decoded_path_str) {
+                        Ok(pixbuf) => {
+                            let texture = gdk::Texture::for_pixbuf(&pixbuf);
+                            album_art.set_paintable(Some(&texture));
+                            art_container.set_visible(true);
+                            album_art.queue_draw();
+                            eprintln!("Successfully loaded art from file: {}", decoded_path);
                         }
-                    }
+                        Err(e) => {
+                            eprintln!("Failed to load pixbuf from {}: {}", decoded_path, e);
+                            album_art.set_paintable(gtk::gdk::Paintable::NONE);
+                            art_container.set_visible(false);
+                        }
+                    },
                     false => {
                         eprintln!("Art file does not exist: {}", decoded_path);
                         album_art.set_paintable(gtk::gdk::Paintable::NONE);
+                        art_container.set_visible(false);
                     }
                 }
             }
