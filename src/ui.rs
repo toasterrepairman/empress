@@ -32,10 +32,13 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
         .default_height(400)
         .build();
 
+    window.set_icon_name(None);
+
     window.set_size_request(150, 150);
 
     let header_bar = adw::HeaderBar::new();
     header_bar.set_show_title(false);
+    header_bar.set_title_widget(None::<&gtk::Widget>);
 
     // Create combo box for player selection
     let player_list = gtk::StringList::new(&[]);
@@ -52,6 +55,21 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
 
     let sidebar = build_sidebar();
     let content = build_content();
+
+    // Sidebar toggle button
+    let sidebar_toggle = gtk::ToggleButton::builder()
+        .icon_name("sidebar-show-symbolic")
+        .tooltip_text("Toggle Sidebar")
+        .active(false)
+        .css_classes(vec!["flat"])
+        .build();
+    header_bar.pack_start(&sidebar_toggle);
+    sidebar_toggle.connect_toggled({
+        let sidebar_container = sidebar.container.clone();
+        move |btn| {
+            sidebar_container.set_visible(btn.is_active());
+        }
+    });
 
     // Add drag gesture to move window on the album art area only
     let drag_gesture = gtk::GestureDrag::new();
@@ -84,7 +102,7 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
         .build();
 
     paned.set_start_child(Some(&sidebar.container));
-    paned.set_end_child(Some(&content.clamp));
+    paned.set_end_child(Some(&content.content_column));
 
     // Initially hide sidebar
     sidebar.container.set_visible(false);
@@ -172,17 +190,6 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
 
     // Track if initial load has been done
     let initial_load_done = Arc::new(Mutex::new(false));
-
-    // Set up window resize handler to show/hide sidebar based on aspect ratio
-    let window_clone = window.clone();
-    let sidebar_clone = sidebar.clone();
-    glib::timeout_add_local(Duration::from_millis(100), move || {
-        let width = window_clone.width() as f64;
-        let height = window_clone.height() as f64;
-        let should_show = width > 1.3 * height;
-        sidebar_clone.container.set_visible(should_show);
-        glib::ControlFlow::Continue
-    });
 
     // Sidebar references for updates
     let sidebar_list_box = sidebar.list_box.clone();
@@ -329,6 +336,7 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
 #[derive(Clone)]
 struct MediaContent {
     container: gtk::Box,
+    content_column: gtk::Box,
     clamp: adw::Clamp,
     album_art: gtk::Picture,
     art_container: gtk::Box,
@@ -351,7 +359,7 @@ fn build_content() -> MediaContent {
         .orientation(gtk::Orientation::Vertical)
         .spacing(12)
         .margin_top(12)
-        .margin_bottom(12)
+        .margin_bottom(0)
         .margin_start(12)
         .margin_end(12)
         .valign(gtk::Align::Fill)
@@ -434,7 +442,7 @@ fn build_content() -> MediaContent {
         .spacing(12)
         .halign(gtk::Align::Center)
         .margin_top(12)
-        .margin_bottom(6)
+        .margin_bottom(12)
         .build();
 
     let prev_button = gtk::Button::builder()
@@ -460,14 +468,23 @@ fn build_content() -> MediaContent {
 
     container.append(&art_container);
     container.append(&info_box);
-    container.append(&controls_box);
 
     clamp.set_child(Some(&container));
+
+    // Outer column: clamped content (expands) + controls (anchored to bottom)
+    let content_column = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .vexpand(true)
+        .hexpand(true)
+        .build();
+    content_column.append(&clamp);
+    content_column.append(&controls_box);
 
     art_container.set_visible(false);
 
     MediaContent {
         container,
+        content_column,
         clamp,
         album_art,
         art_container,
