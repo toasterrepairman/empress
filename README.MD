@@ -1,8 +1,8 @@
 # empress
 
-![test](resources/screenshot.png)
+![app screenshot](resources/screenshot.png)
 
-## realtime MPRIS controller
+## MPRIS-enabled miniplayer for all your favorite apps
 
 ### install
 

@@ -50,11 +50,15 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
     // Add "Auto" option as default
     player_list.append("Auto");
 
-    // Pack the combo box into the header bar
-    header_bar.pack_end(&player_combo);
-
     let sidebar = build_sidebar();
     let content = build_content();
+
+    player_combo.set_halign(gtk::Align::Center);
+    player_combo.set_margin_top(6);
+    player_combo.set_margin_bottom(6);
+    content
+        .content_column
+        .insert_child_after(&player_combo, Some(&content.clamp));
 
     // Sidebar toggle button
     let sidebar_toggle = gtk::ToggleButton::builder()
