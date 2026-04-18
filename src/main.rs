@@ -1,6 +1,6 @@
 mod mpris_client;
-mod ui;
 mod progress_ring_button;
+mod ui;
 
 use gtk::prelude::*;
 use libadwaita as adw;
@@ -8,9 +8,7 @@ use libadwaita as adw;
 const APP_ID: &str = "com.github.toasterrepair.empress";
 
 fn main() {
-    let app = adw::Application::builder()
-        .application_id(APP_ID)
-        .build();
+    let app = adw::Application::builder().application_id(APP_ID).build();
 
     app.connect_activate(|app| {
         // Load custom CSS
@@ -63,6 +61,20 @@ fn load_css() {
             min-height: 52px;
         }
 
+        /* Play/Pause button - use GNOME accent color */
+        progressringbutton button.play-pause {
+            background-color: @accent_bg_color;
+            color: @accent_fg_color;
+        }
+
+        progressringbutton button.play-pause:hover {
+            background-color: mix(@accent_bg_color, white, 0.1);
+        }
+
+        progressringbutton button.play-pause:active {
+            background-color: mix(@accent_bg_color, black, 0.15);
+        }
+
         /* Prev/Next buttons - slightly smaller for visual hierarchy */
         .circular.flat {
             min-width: 40px;
@@ -74,12 +86,12 @@ fn load_css() {
             background-color: @shade_color;
         }
 
-        /* Subtle hover effects for buttons */
-        .circular {
+        /* Subtle hover effects for prev/next buttons */
+        .circular.flat {
             transition: all 150ms ease-out;
         }
 
-        .circular:hover {
+        .circular.flat:hover {
             background-color: @hover_bg_color;
         }
 

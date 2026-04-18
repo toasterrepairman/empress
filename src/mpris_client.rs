@@ -1,8 +1,8 @@
-use mpris::{PlayerFinder, Player, PlaybackStatus};
-use std::sync::mpsc::{channel, Sender, Receiver};
+use mpris::{PlaybackStatus, Player, PlayerFinder};
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Debug, Default)]
 pub struct MediaInfo {
@@ -98,7 +98,10 @@ impl MprisClient {
             }
         });
 
-        Self { command_sender, preferred_player }
+        Self {
+            command_sender,
+            preferred_player,
+        }
     }
 
     pub fn set_preferred_player(&self, player_name: Option<String>) {
@@ -108,7 +111,8 @@ impl MprisClient {
     pub fn get_available_players() -> Vec<String> {
         if let Ok(finder) = PlayerFinder::new() {
             if let Ok(players) = finder.find_all() {
-                players.into_iter()
+                players
+                    .into_iter()
                     .map(|p| p.identity().to_string())
                     .collect()
             } else {
@@ -136,7 +140,8 @@ impl MprisClient {
                     let pref = preferred_player.lock().unwrap();
                     let player_opt = if let Some(ref preferred) = *pref {
                         // Try to find the specific player first
-                        finder.find_by_name(preferred)
+                        finder
+                            .find_by_name(preferred)
                             .ok()
                             .or_else(|| finder.find_active().ok())
                     } else {
@@ -167,24 +172,33 @@ impl MprisClient {
 
     fn get_media_info(player: &Player) -> MediaInfo {
         let metadata = player.get_metadata().ok();
-        let status = player.get_playback_status().ok()
+        let status = player
+            .get_playback_status()
+            .ok()
             .map(PlayerStatus::from)
             .unwrap_or_default();
 
         let (title, artist, album, art_url) = if let Some(ref m) = metadata {
             (
                 m.title().unwrap_or("Unknown").to_string(),
-                m.artists().and_then(|a| a.first().map(|s| s.to_string()))
+                m.artists()
+                    .and_then(|a| a.first().map(|s| s.to_string()))
                     .unwrap_or_else(|| "Unknown Artist".to_string()),
                 m.album_name().unwrap_or("").to_string(),
                 m.art_url().map(|s| s.to_string()),
             )
         } else {
-            ("No media playing".to_string(), String::new(), String::new(), None)
+            (
+                "No media playing".to_string(),
+                String::new(),
+                String::new(),
+                None,
+            )
         };
 
         let position = player.get_position().ok();
-        let length = metadata.as_ref()
+        let length = metadata
+            .as_ref()
             .and_then(|m| m.length())
             .and_then(|l| Duration::try_from(l).ok());
 

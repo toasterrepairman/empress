@@ -31,7 +31,7 @@ mod imp {
             // Create the button child
             let button = gtk::Button::builder()
                 .icon_name("media-playback-start-symbolic")
-                .css_classes(vec!["circular", "suggested-action"])
+                .css_classes(vec!["circular", "play-pause"])
                 .width_request(48)
                 .height_request(48)
                 .build();
@@ -124,17 +124,10 @@ impl ProgressRingButton {
         self.button().set_icon_name(icon_name);
     }
 
-    pub fn set_paused_style(&self, is_paused: bool) {
+    pub fn set_paused_style(&self, _is_paused: bool) {
         let button = self.button();
-        if is_paused {
-            // When paused (showing play icon), use suggested-action (blue)
-            button.remove_css_class("accent");
-            button.add_css_class("suggested-action");
-        } else {
-            // When playing (showing pause icon), use accent color
-            button.remove_css_class("suggested-action");
-            button.add_css_class("accent");
-        }
+        button.remove_css_class("suggested-action");
+        button.add_css_class("play-pause");
     }
 }
 
