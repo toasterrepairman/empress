@@ -38,6 +38,8 @@
         meson
         git
         wrapGAppsHook4
+        flatpak-builder
+        flatpak
       ];
 
       rustPlatform = pkgs.makeRustPlatform {
@@ -65,6 +67,13 @@
 
     in {
       defaultPackage = myRustBuild;
+
+      devShell = pkgs.mkShell {
+        buildInputs = packageDeps;
+        shellHook = ''
+          alias regen-vendor='cargo vendor vendor && tar czf vendor.tar.gz vendor'
+        '';
+      };
 
       meta = with nixpkgs.lib; {
         description = "empress";

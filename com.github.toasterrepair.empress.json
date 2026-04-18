@@ -1,0 +1,49 @@
+{
+  "app-id": "com.github.toasterrepair.empress",
+  "runtime": "org.gnome.Platform",
+  "runtime-version": "49",
+  "sdk": "org.gnome.Sdk",
+  "sdk-extensions": [
+    "org.freedesktop.Sdk.Extension.rust-stable"
+  ],
+  "command": "empress",
+  "finish-args": [
+    "--share=ipc",
+    "--socket=wayland",
+    "--socket=fallback-x11",
+    "--device=dri",
+    "--share=network",
+    "--socket=session-bus"
+  ],
+  "build-options": {
+    "append-path": "/usr/lib/sdk/rust-stable/bin",
+    "env": {
+      "CARGO_HOME": "/run/build/empress/cargo"
+    }
+  },
+  "modules": [
+    {
+      "name": "empress",
+      "buildsystem": "simple",
+      "build-commands": [
+        "tar xzf vendor.tar.gz",
+        "mkdir -p .cargo",
+        "printf '[source.crates-io]\\nreplace-with = \"vendored-sources\"\\n\\n[source.vendored-sources]\\ndirectory = \"vendor\"' > .cargo/config.toml",
+        "cargo build --release --locked",
+        "install -Dm755 target/release/empress /app/bin/empress",
+        "install -Dm644 resources/com.github.toasterrepair.empress.desktop /app/share/applications/com.github.toasterrepair.empress.desktop",
+        "install -Dm644 resources/com.github.toasterrepair.empress.png /app/share/icons/hicolor/256x256/apps/com.github.toasterrepair.empress.png"
+      ],
+      "sources": [
+        {
+          "type": "dir",
+          "path": "."
+        },
+        {
+          "type": "file",
+          "path": "vendor.tar.gz"
+        }
+      ]
+    }
+  ]
+}
