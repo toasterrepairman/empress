@@ -108,20 +108,45 @@ fn load_css() {
         .circular.flat {
             min-width: 40px;
             min-height: 40px;
-        }
-
-        /* Subtle hover effects for prev/next buttons */
-        .circular.flat {
-            transition: all 150ms ease-out;
+            transition: background-color 150ms ease-out;
         }
 
         .circular.flat:hover {
-            background-color: @hover_bg_color;
+            background-color: alpha(@window_fg_color, 0.08);
         }
 
-        /* Smooth transitions for interactive elements */
-        button, picture {
-            transition: opacity 150ms ease-out;
+        .circular.flat:active {
+            background-color: alpha(@window_fg_color, 0.15);
+        }
+
+        /* Volume slider - adopt the user's selected accent color.
+           The .accent class alone doesn't reliably color the inner
+           highlight node on all libadwaita versions, so target it
+           explicitly. */
+        scale.accent > trough > highlight {
+            background-color: @accent_bg_color;
+            border-radius: 999px;
+            transition: background-color 150ms ease-out;
+        }
+
+        scale.accent > trough > slider {
+            background-color: @accent_bg_color;
+            transition: background-color 150ms ease-out,
+                        box-shadow 150ms ease-out;
+        }
+
+        scale.accent > trough > slider:hover {
+            background-color: mix(@accent_bg_color, white, 0.1);
+            box-shadow: 0 0 0 4px alpha(@accent_bg_color, 0.15);
+        }
+
+        scale.accent > trough > slider:active {
+            background-color: mix(@accent_bg_color, black, 0.15);
+        }
+
+        /* Give the trough itself a subtle hover glow */
+        scale.accent trough:hover {
+            background-color: @button_hover_bg_color;
         }
 
         /* Dropdown styling */
@@ -132,19 +157,6 @@ fn load_css() {
         /* Compact header bar */
         headerbar {
             min-height: 42px;
-        }
-
-        /* Volume slider - adopt the user's selected accent color.
-           The .accent class alone doesn't reliably color the inner
-           highlight node on all libadwaita versions, so target it
-           explicitly. */
-        scale.accent > trough > highlight {
-            background-color: @accent_bg_color;
-            border-radius: 999px;
-        }
-
-        scale.accent > trough > slider {
-            background-color: @accent_bg_color;
         }
         "#,
     );
