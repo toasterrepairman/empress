@@ -4,6 +4,7 @@ use gtk::prelude::*;
 use gtk::StringObject;
 use libadwaita as adw;
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -116,7 +117,8 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
     window.set_content(Some(&main_box));
 
     let mpris_client = MprisClient::new();
-    let media_receiver = mpris_client.start_monitoring();
+    let monitor_tick = mpris_client.take_monitor_tick().expect("monitor tick not taken");
+    let media_receiver = mpris_client.start_monitoring(monitor_tick);
 
     // Set up player combo box functionality
     let player_list_clone = player_list.clone();
@@ -180,6 +182,9 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
     let album_art = content.album_art.downgrade();
     let art_container = content.art_container.downgrade();
     let play_pause_button = content.play_pause_button.downgrade();
+    let volume_scale = content.volume_scale.downgrade();
+    let volume_clamp = content.volume_clamp.downgrade();
+    let volume_updating_for_updates = content.volume_updating.clone();
 
     // Track last known art URL to detect changes
     let last_art_url = Arc::new(Mutex::new(None::<String>));
@@ -212,6 +217,8 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
             let album_art = album_art.upgrade();
             let art_container = art_container.upgrade();
             let play_pause_button = play_pause_button.upgrade();
+            let volume_scale = volume_scale.upgrade();
+            let volume_clamp = volume_clamp.upgrade();
 
             if let (
                 Some(title_label),
@@ -220,6 +227,8 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
                 Some(album_art),
                 Some(art_container),
                 Some(play_pause_button),
+                Some(volume_scale),
+                Some(volume_clamp),
             ) = (
                 title_label,
                 artist_label,
@@ -227,6 +236,8 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
                 album_art,
                 art_container,
                 play_pause_button,
+                volume_scale,
+                volume_clamp,
             ) {
                 // Check if we need to force art update (URL changed, title changed, or artist changed)
                 let title_changed = if let Ok(last) = last_title_for_updates.lock() {
@@ -265,6 +276,22 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
                     &info,
                     force_art_update,
                 );
+
+                // Volume slider: hide when not controllable; otherwise reflect
+                // the player's volume. Don't fight the pointer during a drag.
+                let controllable = info.can_control && info.volume.is_some();
+                volume_clamp.set_visible(controllable);
+                if controllable {
+                    if let Some(v) = info.volume {
+                        if !volume_updating_for_updates.load(Ordering::SeqCst) {
+                            let clamped = v.max(0.0).min(1.0);
+                            // set_value is a no-op (no value-changed emission)
+                            // when the value is unchanged, so this can't
+                            // bounce back to MPRIS.
+                            volume_scale.set_value(clamped);
+                        }
+                    }
+                }
 
                 // Update last known values when they change
                 if url_changed || title_changed || artist_changed {
@@ -350,6 +377,9 @@ struct MediaContent {
     play_pause_button: ProgressRingButton,
     prev_button: gtk::Button,
     next_button: gtk::Button,
+    volume_scale: gtk::Scale,
+    volume_clamp: adw::Clamp,
+    volume_updating: Arc<AtomicBool>,
 }
 
 fn build_content() -> MediaContent {
@@ -475,14 +505,45 @@ fn build_content() -> MediaContent {
 
     clamp.set_child(Some(&container));
 
-    // Outer column: clamped content (expands) + controls (anchored to bottom)
+    // Volume slider — native GNOME look, accent-colored, hidden when not controllable.
+    // Wrapped in its own clamp so it matches the width of the album/info area above.
+    let volume_adjustment = gtk::Adjustment::new(0.0, 0.0, 1.0, 0.01, 0.05, 0.0);
+    let volume_scale = gtk::Scale::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .adjustment(&volume_adjustment)
+        .draw_value(false)
+        .hexpand(true)
+        .halign(gtk::Align::Fill)
+        .css_classes(vec!["accent"])
+        .tooltip_text("Volume")
+        .build();
+
+    let volume_clamp = adw::Clamp::builder()
+        .maximum_size(280)
+        .tightening_threshold(200)
+        .margin_top(6)
+        .margin_bottom(6)
+        .build();
+    let volume_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .margin_start(12)
+        .margin_end(12)
+        .build();
+    volume_box.append(&volume_scale);
+    volume_clamp.set_child(Some(&volume_box));
+
+    // Outer column: clamped content (expands) + volume + controls (anchored to bottom)
     let content_column = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .vexpand(true)
         .hexpand(true)
         .build();
     content_column.append(&clamp);
+    content_column.append(&volume_clamp);
     content_column.append(&controls_box);
+
+    // Hidden until a controllable player is detected.
+    volume_clamp.set_visible(false);
 
     art_container.set_visible(false);
 
@@ -498,6 +559,9 @@ fn build_content() -> MediaContent {
         play_pause_button,
         prev_button,
         next_button,
+        volume_scale,
+        volume_clamp,
+        volume_updating: Arc::new(AtomicBool::new(false)),
     }
 }
 
@@ -667,6 +731,32 @@ fn setup_controls(content: &MediaContent, client: MprisClient) {
         let client = client.clone();
         move |_| {
             let _ = client.previous();
+        }
+    });
+
+    // Volume slider → MPRIS
+    // Track the user's drag with a GestureClick so polling doesn't fight the pointer.
+    let volume_updating = content.volume_updating.clone();
+    let drag_click = gtk::GestureClick::new();
+    drag_click.set_button(0); // listen for any button
+    let volume_updating_drag = volume_updating.clone();
+    drag_click.connect_pressed(move |_, _, _, _| {
+        volume_updating_drag.store(true, Ordering::SeqCst);
+    });
+    let volume_updating_release = volume_updating.clone();
+    drag_click.connect_released(move |_, _, _, _| {
+        volume_updating_release.store(false, Ordering::SeqCst);
+    });
+    let volume_updating_cancel = volume_updating.clone();
+    drag_click.connect_cancel(move |_, _| {
+        volume_updating_cancel.store(false, Ordering::SeqCst);
+    });
+    content.volume_scale.add_controller(drag_click);
+
+    content.volume_scale.connect_value_changed({
+        let client = client.clone();
+        move |scale| {
+            let _ = client.set_volume(scale.value());
         }
     });
 

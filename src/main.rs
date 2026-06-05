@@ -125,6 +125,19 @@ fn load_css() {
         headerbar {
             min-height: 42px;
         }
+
+        /* Volume slider - adopt the user's selected accent color.
+           The .accent class alone doesn't reliably color the inner
+           highlight node on all libadwaita versions, so target it
+           explicitly. */
+        scale.accent > trough > highlight {
+            background-color: @accent_bg_color;
+            border-radius: 999px;
+        }
+
+        scale.accent > trough > slider {
+            background-color: @accent_bg_color;
+        }
         "#,
     );
 

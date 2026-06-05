@@ -13,6 +13,8 @@ pub struct MediaInfo {
     pub status: PlayerStatus,
     pub position: Option<Duration>,
     pub length: Option<Duration>,
+    pub volume: Option<f64>,
+    pub can_control: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -38,18 +40,23 @@ enum Command {
     Next,
     Previous,
     Seek(i64),
+    SetVolume(f64),
 }
 
 #[derive(Clone)]
 pub struct MprisClient {
     command_sender: Sender<Command>,
     preferred_player: Arc<Mutex<Option<String>>>,
+    monitor_tick: Sender<()>,
+    monitor_tick_receiver: Arc<Mutex<Option<Receiver<()>>>>,
 }
 
 impl MprisClient {
     pub fn new() -> Self {
         let (command_sender, command_receiver) = channel::<Command>();
         let preferred_player: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let (monitor_tick, tick_receiver) = channel::<()>();
+        let monitor_tick_receiver = Arc::new(Mutex::new(Some(tick_receiver)));
 
         let preferred_player_clone = preferred_player.clone();
 
@@ -90,6 +97,7 @@ impl MprisClient {
                             Command::Next => p.next(),
                             Command::Previous => p.previous(),
                             Command::Seek(offset) => p.seek(offset),
+                            Command::SetVolume(v) => p.set_volume(v.max(0.0)),
                         };
                     }
                 }
@@ -101,11 +109,22 @@ impl MprisClient {
         Self {
             command_sender,
             preferred_player,
+            monitor_tick,
+            monitor_tick_receiver,
         }
     }
 
     pub fn set_preferred_player(&self, player_name: Option<String>) {
         *self.preferred_player.lock().unwrap() = player_name;
+        // Wake the monitor thread so it picks up the new player immediately
+        // instead of waiting for the next 500ms tick.
+        let _ = self.monitor_tick.send(());
+    }
+
+    /// Take the monitor's tick receiver out. Must be called exactly once,
+    /// before `start_monitoring`.
+    pub fn take_monitor_tick(&self) -> Option<Receiver<()>> {
+        self.monitor_tick_receiver.lock().unwrap().take()
     }
 
     pub fn get_available_players() -> Vec<String> {
@@ -127,7 +146,7 @@ impl MprisClient {
         player.identity().to_string()
     }
 
-    pub fn start_monitoring(&self) -> Receiver<MediaInfo> {
+    pub fn start_monitoring(&self, tick_receiver: Receiver<()>) -> Receiver<MediaInfo> {
         let (info_sender, info_receiver) = channel();
         let preferred_player = self.preferred_player.clone();
 
@@ -163,7 +182,12 @@ impl MprisClient {
                     break;
                 }
 
-                thread::sleep(Duration::from_millis(500));
+                // Wait up to 500ms for the next tick, or until we're poked.
+                // A poke (e.g. channel change) cuts the wait short.
+                if tick_receiver.recv_timeout(Duration::from_millis(500)).is_ok() {
+                    // Drain any extra pokes that arrived during the wait.
+                    while tick_receiver.try_recv().is_ok() {}
+                }
             }
         });
 
@@ -202,6 +226,13 @@ impl MprisClient {
             .and_then(|m| m.length())
             .and_then(|l| Duration::try_from(l).ok());
 
+        let can_control = player.can_control().unwrap_or(false);
+        let volume = if can_control {
+            player.get_volume().ok()
+        } else {
+            None
+        };
+
         MediaInfo {
             title,
             artist,
@@ -210,6 +241,8 @@ impl MprisClient {
             status,
             position,
             length,
+            volume,
+            can_control,
         }
     }
 
@@ -230,6 +263,11 @@ impl MprisClient {
 
     pub fn seek(&self, offset_micros: i64) -> anyhow::Result<()> {
         self.command_sender.send(Command::Seek(offset_micros))?;
+        Ok(())
+    }
+
+    pub fn set_volume(&self, volume: f64) -> anyhow::Result<()> {
+        self.command_sender.send(Command::SetVolume(volume))?;
         Ok(())
     }
 }
