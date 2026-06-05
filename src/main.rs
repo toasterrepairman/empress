@@ -65,6 +65,8 @@ fn load_css() {
         progressringbutton button.play-pause {
             background-color: @accent_bg_color;
             color: @accent_fg_color;
+            transition: background-color 250ms ease-in-out,
+                        color 250ms ease-in-out;
         }
 
         progressringbutton button.play-pause:hover {
@@ -73,6 +75,20 @@ fn load_css() {
 
         progressringbutton button.play-pause:active {
             background-color: mix(@accent_bg_color, black, 0.15);
+        }
+
+        /* Paused state - translucent background, accent foreground (icon + radial) */
+        progressringbutton button.play-pause.paused {
+            background-color: alpha(@accent_bg_color, 0.2);
+            color: @accent_bg_color;
+        }
+
+        progressringbutton button.play-pause.paused:hover {
+            background-color: alpha(@accent_bg_color, 0.3);
+        }
+
+        progressringbutton button.play-pause.paused:active {
+            background-color: alpha(@accent_bg_color, 0.45);
         }
 
         /* Prev/Next buttons - slightly smaller for visual hierarchy */

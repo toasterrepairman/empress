@@ -66,9 +66,12 @@ mod imp {
                 let rect = graphene::Rect::new(0.0, 0.0, width, height);
                 let cr = snapshot.append_cairo(&rect);
 
-                // Get the theme color using the new API
-                let style_context = widget.style_context();
-                let color = style_context.color();
+                // Use the inner button's color so the radial matches the icon
+                let button = widget
+                    .first_child()
+                    .and_downcast::<gtk::Button>()
+                    .expect("First child should be a button");
+                let color = button.style_context().color();
 
                 // Set up cairo for the progress ring
                 cr.set_source_rgba(
@@ -124,10 +127,15 @@ impl ProgressRingButton {
         self.button().set_icon_name(icon_name);
     }
 
-    pub fn set_paused_style(&self, _is_paused: bool) {
+    pub fn set_paused_style(&self, is_paused: bool) {
         let button = self.button();
         button.remove_css_class("suggested-action");
         button.add_css_class("play-pause");
+        if is_paused {
+            button.add_css_class("paused");
+        } else {
+            button.remove_css_class("paused");
+        }
     }
 }
 
