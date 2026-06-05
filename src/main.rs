@@ -33,6 +33,19 @@ fn load_css() {
             background-color: @shade_color;
         }
 
+        /* Album art placeholder - bold initial on shaded background */
+        .album-art-placeholder {
+            font-size: 4rem;
+            font-weight: 800;
+            color: alpha(@window_fg_color, 0.6);
+            background-color: @shade_color;
+            border-radius: 24px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12),
+                        0 8px 24px rgba(0, 0, 0, 0.06);
+            min-width: 180px;
+            min-height: 180px;
+        }
+
         /* Title styling - using Libadwaita heading styles */
         .title-1 {
             font-size: 1.5rem;
@@ -95,11 +108,6 @@ fn load_css() {
         .circular.flat {
             min-width: 40px;
             min-height: 40px;
-        }
-
-        /* Ensure proper dark mode support */
-        .album-art {
-            background-color: @shade_color;
         }
 
         /* Subtle hover effects for prev/next buttons */

@@ -180,6 +180,7 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
     let artist_label = content.artist_label.downgrade();
     let album_label = content.album_label.downgrade();
     let album_art = content.album_art.downgrade();
+    let placeholder_label = content.placeholder_label.downgrade();
     let art_container = content.art_container.downgrade();
     let play_pause_button = content.play_pause_button.downgrade();
     let volume_scale = content.volume_scale.downgrade();
@@ -215,6 +216,7 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
             let artist_label = artist_label.upgrade();
             let album_label = album_label.upgrade();
             let album_art = album_art.upgrade();
+            let placeholder_label = placeholder_label.upgrade();
             let art_container = art_container.upgrade();
             let play_pause_button = play_pause_button.upgrade();
             let volume_scale = volume_scale.upgrade();
@@ -225,6 +227,7 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
                 Some(artist_label),
                 Some(album_label),
                 Some(album_art),
+                Some(placeholder_label),
                 Some(art_container),
                 Some(play_pause_button),
                 Some(volume_scale),
@@ -234,6 +237,7 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
                 artist_label,
                 album_label,
                 album_art,
+                placeholder_label,
                 art_container,
                 play_pause_button,
                 volume_scale,
@@ -271,6 +275,7 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
                     &artist_label,
                     &album_label,
                     &album_art,
+                    &placeholder_label,
                     &art_container,
                     &play_pause_button,
                     &info,
@@ -370,6 +375,7 @@ struct MediaContent {
     content_column: gtk::Box,
     clamp: adw::Clamp,
     album_art: gtk::Picture,
+    placeholder_label: gtk::Label,
     art_container: gtk::Box,
     title_label: gtk::Label,
     artist_label: gtk::Label,
@@ -418,12 +424,22 @@ fn build_content() -> MediaContent {
         .content_fit(gtk::ContentFit::Cover)
         .vexpand(true)
         .hexpand(true)
-        .width_request(100)
-        .height_request(100)
+        .width_request(180)
+        .height_request(180)
         .css_classes(vec!["album-art"])
         .build();
 
+    let placeholder_label = gtk::Label::builder()
+        .label("?")
+        .halign(gtk::Align::Center)
+        .valign(gtk::Align::Center)
+        .vexpand(true)
+        .hexpand(true)
+        .css_classes(vec!["album-art", "album-art-placeholder"])
+        .build();
+
     art_container.append(&album_art);
+    art_container.append(&placeholder_label);
 
     // Info section using proper Libadwaita patterns
     let info_box = gtk::Box::builder()
@@ -546,12 +562,14 @@ fn build_content() -> MediaContent {
     volume_clamp.set_visible(false);
 
     art_container.set_visible(false);
+    placeholder_label.set_visible(false);
 
     MediaContent {
         container,
         content_column,
         clamp,
         album_art,
+        placeholder_label,
         art_container,
         title_label,
         artist_label,
@@ -570,6 +588,7 @@ fn update_ui_widgets(
     artist_label: &gtk::Label,
     album_label: &gtk::Label,
     album_art: &gtk::Picture,
+    placeholder_label: &gtk::Label,
     art_container: &gtk::Box,
     play_pause_button: &ProgressRingButton,
     info: &MediaInfo,
@@ -582,12 +601,26 @@ fn update_ui_widgets(
     artist_label.set_visible(!info.artist.is_empty());
     album_label.set_visible(!info.album.is_empty());
 
+    // Update placeholder text: first letter of artist, or title, or "?"
+    let initial = if !info.artist.is_empty() {
+        info.artist.chars().next().unwrap_or('?').to_uppercase().to_string()
+    } else if !info.title.is_empty() {
+        info.title.chars().next().unwrap_or('?').to_uppercase().to_string()
+    } else {
+        "?".to_string()
+    };
+    placeholder_label.set_text(&initial);
+
     // Handle album art loading with better error handling - only update when forced
     if force_art_update {
-        // Clear existing art before loading new art
-        if !info.art_url.is_some() || info.art_url.as_ref().map_or(true, |u| u.is_empty()) {
+        let has_art = info.art_url.as_ref().map_or(false, |u| !u.is_empty());
+
+        if !has_art {
+            // No art URL — show placeholder
             album_art.set_paintable(gtk::gdk::Paintable::NONE);
-            art_container.set_visible(false);
+            album_art.set_visible(false);
+            placeholder_label.set_visible(true);
+            art_container.set_visible(true);
         } else if let Some(ref art_url) = info.art_url {
             // Better URL handling: strip "file://" and handle URL encoding
             let file_path = if let Some(stripped) = art_url.strip_prefix("file://") {
@@ -619,6 +652,8 @@ fn update_ui_widgets(
                                     Ok(pixbuf) => {
                                         let texture = gdk::Texture::for_pixbuf(&pixbuf);
                                         album_art.set_paintable(Some(&texture));
+                                        album_art.set_visible(true);
+                                        placeholder_label.set_visible(false);
                                         art_container.set_visible(true);
                                         album_art.queue_draw();
                                         // Only log on initial load, not on retry mechanism
@@ -630,21 +665,27 @@ fn update_ui_widgets(
                                             art_url, e
                                         );
                                         album_art.set_paintable(gtk::gdk::Paintable::NONE);
-                                        art_container.set_visible(false);
+                                        album_art.set_visible(false);
+                                        placeholder_label.set_visible(true);
+                                        art_container.set_visible(true);
                                     }
                                 }
                             }
                             Err(e) => {
                                 eprintln!("Failed to read bytes from web {}: {}", art_url, e);
                                 album_art.set_paintable(gtk::gdk::Paintable::NONE);
-                                art_container.set_visible(false);
+                                album_art.set_visible(false);
+                                placeholder_label.set_visible(true);
+                                art_container.set_visible(true);
                             }
                         }
                     }
                     Err(e) => {
                         eprintln!("Failed to download image from web {}: {}", art_url, e);
                         album_art.set_paintable(gtk::gdk::Paintable::NONE);
-                        art_container.set_visible(false);
+                        album_art.set_visible(false);
+                        placeholder_label.set_visible(true);
+                        art_container.set_visible(true);
                     }
                 }
             } else {
@@ -663,6 +704,8 @@ fn update_ui_widgets(
                         Ok(pixbuf) => {
                             let texture = gdk::Texture::for_pixbuf(&pixbuf);
                             album_art.set_paintable(Some(&texture));
+                            album_art.set_visible(true);
+                            placeholder_label.set_visible(false);
                             art_container.set_visible(true);
                             album_art.queue_draw();
                             eprintln!("Successfully loaded art from file: {}", decoded_path);
@@ -670,20 +713,26 @@ fn update_ui_widgets(
                         Err(e) => {
                             eprintln!("Failed to load pixbuf from {}: {}", decoded_path, e);
                             album_art.set_paintable(gtk::gdk::Paintable::NONE);
-                            art_container.set_visible(false);
+                            album_art.set_visible(false);
+                            placeholder_label.set_visible(true);
+                            art_container.set_visible(true);
                         }
                     },
                     false => {
                         eprintln!("Art file does not exist: {}", decoded_path);
                         album_art.set_paintable(gtk::gdk::Paintable::NONE);
-                        art_container.set_visible(false);
+                        album_art.set_visible(false);
+                        placeholder_label.set_visible(true);
+                        art_container.set_visible(true);
                     }
                 }
             }
         } else {
-            // No art URL provided, clear art and hide container
+            // No art URL provided, show placeholder
             album_art.set_paintable(gtk::gdk::Paintable::NONE);
-            art_container.set_visible(false);
+            album_art.set_visible(false);
+            placeholder_label.set_visible(true);
+            art_container.set_visible(true);
         }
     }
 
