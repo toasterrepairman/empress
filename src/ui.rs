@@ -125,8 +125,16 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
     let player_combo_clone = player_combo.clone();
     let mpris_client_for_combo = mpris_client.clone();
 
+    // Flag to block the selection handler during combo refresh
+    let is_refreshing = Arc::new(AtomicBool::new(false));
+    let is_refreshing_for_refresh = is_refreshing.clone();
+    let is_refreshing_for_handler = is_refreshing.clone();
+
     // Refresh player list every 5 seconds
     glib::timeout_add_local(Duration::from_secs(5), move || {
+        // Block the selection handler while we repopulate the model
+        is_refreshing_for_refresh.store(true, Ordering::SeqCst);
+
         // Get current selection
         let current_selected = player_combo_clone.selected();
 
@@ -145,6 +153,8 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
             let _ = player_combo_clone.set_selected(current_selected);
         }
 
+        is_refreshing_for_refresh.store(false, Ordering::SeqCst);
+
         glib::ControlFlow::Continue
     });
 
@@ -160,6 +170,10 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
     player_combo.connect_selected_item_notify({
         let mpris_client = mpris_client_for_combo.clone();
         move |combo| {
+            // Skip during combo refresh to avoid resetting preferred player
+            if is_refreshing_for_handler.load(Ordering::SeqCst) {
+                return;
+            }
             let selected = combo.selected();
             if selected == 0 {
                 // "Auto" selected - clear preferred player
@@ -300,10 +314,8 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
 
                 // Update last known values when they change
                 if url_changed || title_changed || artist_changed {
-                    if let Some(ref art_url) = info.art_url {
-                        if let Ok(mut last_url) = last_art_url_for_updates.lock() {
-                            *last_url = Some(art_url.clone());
-                        }
+                    if let Ok(mut last_url) = last_art_url_for_updates.lock() {
+                        *last_url = info.art_url.clone();
                     }
                 }
 

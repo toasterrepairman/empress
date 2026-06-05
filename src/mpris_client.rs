@@ -65,44 +65,37 @@ impl MprisClient {
             let mut player: Option<Player> = None;
 
             loop {
-                // Update player reference continuously (before checking commands)
-                let finder = PlayerFinder::new();
-                if let Ok(finder) = finder {
-                    // Check if we have a preferred player
-                    let pref = preferred_player_clone.lock().unwrap();
-                    if let Some(ref preferred) = *pref {
-                        // Try to find the specific player
-                        if let Ok(p) = finder.find_by_name(preferred) {
-                            player = Some(p);
-                        } else if let Some(active_player) = finder.find_active().ok() {
-                            player = Some(active_player);
-                        } else {
-                            player = None;
-                        }
+                // Block until a command arrives (no busy D-Bus polling).
+                let Ok(cmd) = command_receiver.recv() else {
+                    break; // channel closed
+                };
+
+                // Resolve the player fresh for each command.
+                let preferred_name = preferred_player_clone
+                    .lock()
+                    .ok()
+                    .and_then(|pref| pref.clone());
+
+                if let Ok(finder) = PlayerFinder::new() {
+                    player = if let Some(ref preferred) = preferred_name {
+                        finder
+                            .find_by_name(preferred)
+                            .ok()
+                            .or_else(|| finder.find_active().ok())
                     } else {
-                        // No preferred player, use active
-                        if let Some(active_player) = finder.find_active().ok() {
-                            player = Some(active_player);
-                        } else {
-                            player = None;
-                        }
-                    }
+                        finder.find_active().ok()
+                    };
                 }
 
-                // Check for commands (non-blocking)
-                if let Ok(cmd) = command_receiver.try_recv() {
-                    if let Some(ref p) = player {
-                        let _ = match cmd {
-                            Command::PlayPause => p.play_pause(),
-                            Command::Next => p.next(),
-                            Command::Previous => p.previous(),
-                            Command::Seek(offset) => p.seek(offset),
-                            Command::SetVolume(v) => p.set_volume(v.max(0.0)),
-                        };
-                    }
+                if let Some(ref p) = player {
+                    let _ = match cmd {
+                        Command::PlayPause => p.play_pause(),
+                        Command::Next => p.next(),
+                        Command::Previous => p.previous(),
+                        Command::Seek(offset) => p.seek(offset),
+                        Command::SetVolume(v) => p.set_volume(v.max(0.0)),
+                    };
                 }
-
-                thread::sleep(Duration::from_millis(100));
             }
         });
 
@@ -152,19 +145,18 @@ impl MprisClient {
 
         thread::spawn(move || {
             loop {
-                let finder = PlayerFinder::new();
+                let preferred_name = preferred_player
+                    .lock()
+                    .ok()
+                    .and_then(|pref| pref.clone());
 
-                let info = if let Ok(finder) = finder {
-                    // Check if we have a preferred player
-                    let pref = preferred_player.lock().unwrap();
-                    let player_opt = if let Some(ref preferred) = *pref {
-                        // Try to find the specific player first
+                let info = if let Ok(finder) = PlayerFinder::new() {
+                    let player_opt = if let Some(ref preferred) = preferred_name {
                         finder
                             .find_by_name(preferred)
                             .ok()
                             .or_else(|| finder.find_active().ok())
                     } else {
-                        // No preferred player, use active
                         finder.find_active().ok()
                     };
 
