@@ -199,7 +199,6 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
     let play_pause_button = content.play_pause_button.downgrade();
     let volume_scale = content.volume_scale.downgrade();
     let volume_clamp = content.volume_clamp.downgrade();
-    let volume_updating_for_updates = content.volume_updating.clone();
 
     // Track last known art URL to detect changes
     let last_art_url = Arc::new(Mutex::new(None::<String>));
@@ -297,18 +296,16 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
                 );
 
                 // Volume slider: hide when not controllable; otherwise reflect
-                // the player's volume. Don't fight the pointer during a drag.
+                // the player's volume.
                 let controllable = info.can_control && info.volume.is_some();
                 volume_clamp.set_visible(controllable);
                 if controllable {
                     if let Some(v) = info.volume {
-                        if !volume_updating_for_updates.load(Ordering::SeqCst) {
-                            let clamped = v.max(0.0).min(1.0);
-                            // set_value is a no-op (no value-changed emission)
-                            // when the value is unchanged, so this can't
-                            // bounce back to MPRIS.
-                            volume_scale.set_value(clamped);
-                        }
+                        let clamped = v.max(0.0).min(1.0);
+                        // set_value is a no-op (no value-changed emission)
+                        // when the value is unchanged, so this can't
+                        // bounce back to MPRIS.
+                        volume_scale.set_value(clamped);
                     }
                 }
 
@@ -397,7 +394,6 @@ struct MediaContent {
     next_button: gtk::Button,
     volume_scale: gtk::Scale,
     volume_clamp: adw::Clamp,
-    volume_updating: Arc<AtomicBool>,
 }
 
 fn build_content() -> MediaContent {
@@ -591,7 +587,6 @@ fn build_content() -> MediaContent {
         next_button,
         volume_scale,
         volume_clamp,
-        volume_updating: Arc::new(AtomicBool::new(false)),
     }
 }
 
@@ -796,24 +791,6 @@ fn setup_controls(content: &MediaContent, client: MprisClient) {
     });
 
     // Volume slider → MPRIS
-    // Track the user's drag with a GestureClick so polling doesn't fight the pointer.
-    let volume_updating = content.volume_updating.clone();
-    let drag_click = gtk::GestureClick::new();
-    drag_click.set_button(0); // listen for any button
-    let volume_updating_drag = volume_updating.clone();
-    drag_click.connect_pressed(move |_, _, _, _| {
-        volume_updating_drag.store(true, Ordering::SeqCst);
-    });
-    let volume_updating_release = volume_updating.clone();
-    drag_click.connect_released(move |_, _, _, _| {
-        volume_updating_release.store(false, Ordering::SeqCst);
-    });
-    let volume_updating_cancel = volume_updating.clone();
-    drag_click.connect_cancel(move |_, _| {
-        volume_updating_cancel.store(false, Ordering::SeqCst);
-    });
-    content.volume_scale.add_controller(drag_click);
-
     content.volume_scale.connect_value_changed({
         let client = client.clone();
         move |scale| {
