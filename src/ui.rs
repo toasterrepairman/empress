@@ -441,7 +441,7 @@ fn build_content() -> MediaContent {
         .orientation(gtk::Orientation::Vertical)
         .spacing(6)
         .halign(gtk::Align::Center)
-        .margin_top(12)
+        .margin_top(0)
         .build();
 
     let title_label = gtk::Label::builder()
@@ -486,7 +486,7 @@ fn build_content() -> MediaContent {
         .orientation(gtk::Orientation::Horizontal)
         .spacing(12)
         .halign(gtk::Align::Center)
-        .margin_top(12)
+        .margin_top(6)
         .margin_bottom(12)
         .build();
 

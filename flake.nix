@@ -49,7 +49,7 @@
 
       myRustBuild = rustPlatform.buildRustPackage {
         pname = "empress"; # make this what ever your cargo.toml package.name is
-        version = "0.1.0";
+        version = "0.2.0";
         src = ./.; # the folder with the cargo.toml
         nativeBuildInputs = packageDeps;
         buildInputs = packageDeps;
