@@ -256,7 +256,6 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
                 volume_scale,
                 volume_clamp,
             ) {
-                // Check if we need to force art update (URL changed, title changed, or artist changed)
                 let title_changed = if let Ok(last) = last_title_for_updates.lock() {
                     *last != info.title
                 } else {
@@ -295,35 +294,27 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
                     force_art_update,
                 );
 
-                // Volume slider: hide when not controllable; otherwise reflect
-                // the player's volume.
                 let controllable = info.can_control && info.volume.is_some();
                 volume_clamp.set_visible(controllable);
                 if controllable {
                     if let Some(v) = info.volume {
                         let clamped = v.max(0.0).min(1.0);
-                        // set_value is a no-op (no value-changed emission)
-                        // when the value is unchanged, so this can't
-                        // bounce back to MPRIS.
                         volume_scale.set_value(clamped);
                     }
                 }
 
-                // Update last known values when they change
                 if url_changed || title_changed || artist_changed {
                     if let Ok(mut last_url) = last_art_url_for_updates.lock() {
                         *last_url = info.art_url.clone();
                     }
                 }
 
-                // Mark initial load as done
                 if is_initial {
                     if let Ok(mut initial) = initial_load_done.lock() {
                         *initial = true;
                     }
                 }
 
-                // Check if status has changed and update history
                 let status_changed = if let Ok(last) = last_status_for_updates.lock() {
                     *last != info.status
                 } else {
@@ -331,7 +322,6 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
                 };
 
                 if status_changed || title_changed || artist_changed {
-                    // Update last known values
                     if let Ok(mut last) = last_status_for_updates.lock() {
                         *last = info.status.clone();
                     }
@@ -342,7 +332,6 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
                         *last = info.artist.clone();
                     }
 
-                    // Add to history
                     if let Ok(mut history) = history_for_updates.lock() {
                         let entry = StatusHistoryEntry {
                             status: info.status.clone(),
@@ -352,12 +341,10 @@ pub fn build_ui(app: &adw::Application) -> adw::ApplicationWindow {
                         };
                         history.push_front(entry);
 
-                        // Limit history size
                         while history.len() > 50 {
                             history.pop_back();
                         }
 
-                        // Update sidebar
                         update_sidebar(&sidebar_list_box, &history);
                     }
                 }

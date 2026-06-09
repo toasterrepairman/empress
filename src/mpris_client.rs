@@ -152,6 +152,9 @@ impl MprisClient {
                 }
             };
 
+            let mut last_status = PlayerStatus::Stopped;
+            let mut last_title = String::new();
+
             loop {
                 let preferred_name = preferred_player
                     .lock()
@@ -173,11 +176,30 @@ impl MprisClient {
                     MediaInfo::default()
                 };
 
+                let status = info.status.clone();
+                let title = info.title.clone();
+
                 if info_sender.send(info).is_err() {
                     break;
                 }
 
-                if tick_receiver.recv_timeout(Duration::from_millis(500)).is_ok() {
+                let poll_interval = match status {
+                    PlayerStatus::Playing => Duration::from_millis(500),
+                    PlayerStatus::Paused => Duration::from_secs(3),
+                    PlayerStatus::Stopped => Duration::from_secs(5),
+                };
+
+                let status_changed = status != last_status || title != last_title;
+                last_status = status;
+                last_title = title;
+
+                let timeout = if status_changed {
+                    Duration::from_millis(500)
+                } else {
+                    poll_interval
+                };
+
+                if tick_receiver.recv_timeout(timeout).is_ok() {
                     while tick_receiver.try_recv().is_ok() {}
                 }
             }
