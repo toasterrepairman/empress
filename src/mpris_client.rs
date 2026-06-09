@@ -63,29 +63,29 @@ impl MprisClient {
         // Spawn a thread that owns the Player and handles commands
         thread::spawn(move || {
             let mut player: Option<Player> = None;
+            let finder = match PlayerFinder::new() {
+                Ok(f) => f,
+                Err(_) => return,
+            };
 
             loop {
-                // Block until a command arrives (no busy D-Bus polling).
                 let Ok(cmd) = command_receiver.recv() else {
-                    break; // channel closed
+                    break;
                 };
 
-                // Resolve the player fresh for each command.
                 let preferred_name = preferred_player_clone
                     .lock()
                     .ok()
                     .and_then(|pref| pref.clone());
 
-                if let Ok(finder) = PlayerFinder::new() {
-                    player = if let Some(ref preferred) = preferred_name {
-                        finder
-                            .find_by_name(preferred)
-                            .ok()
-                            .or_else(|| finder.find_active().ok())
-                    } else {
-                        finder.find_active().ok()
-                    };
-                }
+                player = if let Some(ref preferred) = preferred_name {
+                    finder
+                        .find_by_name(preferred)
+                        .ok()
+                        .or_else(|| finder.find_active().ok())
+                } else {
+                    finder.find_active().ok()
+                };
 
                 if let Some(ref p) = player {
                     let _ = match cmd {
@@ -144,40 +144,40 @@ impl MprisClient {
         let preferred_player = self.preferred_player.clone();
 
         thread::spawn(move || {
+            let finder = match PlayerFinder::new() {
+                Ok(f) => f,
+                Err(_) => {
+                    let _ = info_sender.send(MediaInfo::default());
+                    return;
+                }
+            };
+
             loop {
                 let preferred_name = preferred_player
                     .lock()
                     .ok()
                     .and_then(|pref| pref.clone());
 
-                let info = if let Ok(finder) = PlayerFinder::new() {
-                    let player_opt = if let Some(ref preferred) = preferred_name {
-                        finder
-                            .find_by_name(preferred)
-                            .ok()
-                            .or_else(|| finder.find_active().ok())
-                    } else {
-                        finder.find_active().ok()
-                    };
+                let player_opt = if let Some(ref preferred) = preferred_name {
+                    finder
+                        .find_by_name(preferred)
+                        .ok()
+                        .or_else(|| finder.find_active().ok())
+                } else {
+                    finder.find_active().ok()
+                };
 
-                    if let Some(player) = player_opt {
-                        Self::get_media_info(&player)
-                    } else {
-                        MediaInfo::default()
-                    }
+                let info = if let Some(player) = player_opt {
+                    Self::get_media_info(&player)
                 } else {
                     MediaInfo::default()
                 };
 
-                // Send info through channel; if receiver is dropped, exit thread
                 if info_sender.send(info).is_err() {
                     break;
                 }
 
-                // Wait up to 500ms for the next tick, or until we're poked.
-                // A poke (e.g. channel change) cuts the wait short.
                 if tick_receiver.recv_timeout(Duration::from_millis(500)).is_ok() {
-                    // Drain any extra pokes that arrived during the wait.
                     while tick_receiver.try_recv().is_ok() {}
                 }
             }
